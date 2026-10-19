@@ -166,7 +166,7 @@ class ReactToDesiredOutcomeIntent(Operator[ConversationState]):
         world = state.reasoner.world
         outcome = self._outcome_populator(state.human_utterance.phrase, DEFAULT_LLM, *known_entities(world))
         try:
-            goal = outcome.to_relations(world)
+            goal = outcome.to_relations(state.reasoner.find_entity)
         except (KeyError, ValidationError):
             goal = []
         if not goal:

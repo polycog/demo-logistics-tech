@@ -1,0 +1,15 @@
+# which language model the agent talks through
+#
+# provider picks one of the sections below: "openai" or "local"
+# the LLM_PROVIDER environment variable overrides it for one run, e.g. LLM_PROVIDER=openai python assistant.py
+provider = "openai"
+
+# OpenAI's hosted models; the API key is read from the OPENAI_API_KEY environment variable
+[openai]
+model = "gpt-4o"
+
+# a model served on this machine through an OpenAI-compatible API, such as LM Studio
+[local]
+model = "openai/gpt-oss-20b"
+base_url = "http://localhost:1234/v1"
+api_key = "lm-studio"  # LM Studio accepts any key

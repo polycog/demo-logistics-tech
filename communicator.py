@@ -1,14 +1,40 @@
 """language understanding and generation for the pricing support agent, built on cognition's language tools"""
 
+import os
+import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from cognition import DocEnum, Entity, WorldGraph
 from pydantic import BaseModel, Field
 from pydantic_ai.models import Model, infer_model
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from domain import Airplane, Airport, At, City, GasPrice, LaborCost, Office, Package, Truck, Vehicle
 
-DEFAULT_LLM: Model = infer_model("openai:gpt-4o")
+LLM_CONFIG = Path(__file__).with_name("llm_config.toml")
+
+
+def load_llm(config_path: Path = LLM_CONFIG) -> Model:
+    """builds the language model named by the config file: OpenAI's hosted model, or a local model served through an
+    OpenAI-compatible API such as LM Studio; the LLM_PROVIDER environment variable overrides the file's provider"""
+    with config_path.open("rb") as f:
+        config = tomllib.load(f)
+    provider = os.environ.get("LLM_PROVIDER", config["provider"])
+    match provider:
+        case "openai":
+            return infer_model(f"openai:{config['openai']['model']}")
+        case "local":
+            local = config["local"]
+            return OpenAIChatModel(
+                local["model"], provider=OpenAIProvider(base_url=local["base_url"], api_key=local["api_key"])
+            )
+    raise ValueError(f"unknown LLM provider {provider!r}; expected 'openai' or 'local'")
+
+
+DEFAULT_LLM: Model = load_llm()
 
 
 @dataclass(frozen=True)
@@ -148,13 +174,18 @@ class DesiredOutcome(BaseModel):
         description="where each package or vehicle should end up; empty if the human did not say"
     )
 
-    def to_relations(self, world: WorldGraph) -> list[At]:
-        """resolves the named facts against the world graph into At relations; raises KeyError for an unknown
-        name and pydantic.ValidationError when an entity cannot be at the named place"""
-        return [
-            At(entity1=world.get_entity(fact.entity1, linked=False), entity2=world.get_entity(fact.entity2, linked=False))
-            for fact in self.facts
-        ]
+    def to_relations(self, find_entity: Callable[[str], Entity | None]) -> list[At]:
+        """resolves the named facts into At relations, looking each name up with find_entity (such as the reasoner's,
+        which also accepts display names); raises KeyError for a name it cannot find and pydantic.ValidationError
+        when an entity cannot be at the named place"""
+
+        def resolve(name: str) -> Entity:
+            entity = find_entity(name)
+            if entity is None:
+                raise KeyError(name)
+            return entity
+
+        return [At(entity1=resolve(fact.entity1), entity2=resolve(fact.entity2)) for fact in self.facts]
 
 
 def known_entities(world: WorldGraph) -> list[str]:

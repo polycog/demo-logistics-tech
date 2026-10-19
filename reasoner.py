@@ -7,9 +7,15 @@ from cognition import BinaryRelation, Entity, WorldGraph
 from domain import At, GasPrice, LaborCost, Package, Truck, Airplane, Office, Airport, AirRoute, TruckRoute, City
 
 
+def _normalize(name: str) -> str:
+    """a name in lowercase with underscores as spaces, so "Gas Price" and "gas_price" compare equal"""
+    return name.replace("_", " ").strip().lower()
+
+
 def _matches(entity: Entity, name: str | None) -> bool:
-    """whether the name refers to the entity, by its name or its display name, ignoring case; None matches anything"""
-    return name is None or name.lower() in (entity.name.lower(), getattr(entity, "display_name", "").lower())
+    """whether the name refers to the entity, by its name or its display name, ignoring case and underscores; None
+    matches anything"""
+    return name is None or _normalize(name) in (_normalize(entity.name), _normalize(getattr(entity, "display_name", "")))
 
 
 class Reasoner:
@@ -144,14 +150,15 @@ class Reasoner:
     ) -> list[R]:
         """answers a relation query: every relation of the given type in the world graph whose entity1 and entity2
         match the given names; a side left as None is unconstrained. a name matches an entity's name or its display
-        name, ignoring case"""
+        name, ignoring case and underscores"""
         return list(self.world.snapshot.by(
             relation_type,
             lambda relation: _matches(relation.entity1, entity1) and _matches(relation.entity2, entity2),
         ))
 
     def find_entity(self, name: str) -> Entity | None:
-        """the entity the name refers to, by its name or its display name ignoring case; None if there is none"""
+        """the entity the name refers to, by its name or its display name ignoring case and underscores; None if there
+        is none"""
         for entity in self.world.snapshot.by(Entity, lambda e: _matches(e, name)):
             return self.world.get_entity(entity.name, linked=False)
         return None

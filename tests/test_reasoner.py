@@ -42,6 +42,11 @@ def test_find_entity_matches_name_or_display_name_ignoring_case(name):
     assert isinstance(entity, Truck) and entity.name == "truck1"
 
 
+@pytest.mark.parametrize("name", ["gas price", "Gas Price", "gas_price"])
+def test_find_entity_treats_underscores_as_spaces(name):
+    assert Reasoner().find_entity(name).name == "gas_price"
+
+
 def test_find_entity_returns_the_graphs_entity_not_a_frozen_copy():
     assert type(Reasoner().find_entity("office_boston")) is Office
 
