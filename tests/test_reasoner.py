@@ -73,9 +73,7 @@ def test_find_relations_constrains_both_sides():
 
 
 def test_find_relations_without_constraints_returns_every_relation_of_the_type():
-    assert pairs(Reasoner().find_relations(At)) == {
-        ("package1", "office_seattle"), ("truck1", "SEA"), ("truck2", "SFO"), ("air1", "SEA"),
-    }
+    assert pairs(Reasoner().find_relations(At)) == {("truck1", "SEA"), ("truck2", "SFO"), ("air1", "SEA")}
 
 
 def test_find_relations_matches_display_names_ignoring_case():
@@ -144,9 +142,10 @@ def test_update_entity_replaces_its_values():
 
 def test_update_entity_keeps_its_relations():
     reasoner = Reasoner()
-    reasoner.update_entity(Package(name="package1", display_name="crate of machine parts", weight=500))
-    assert reasoner.find_entity("package1").weight == 500
-    assert location_of(reasoner, "package1") == "office_seattle"
+    reasoner.update_entity(Truck(name="truck1", display_name="Big Bertha", model="Freightliner M2 106 26ft box truck",
+                                 max_payload=12000, license_plate="C12345A"))
+    assert reasoner.find_entity("truck1").max_payload == 12000
+    assert location_of(reasoner, "truck1") == "SEA"
 
 
 def test_update_entity_refuses_an_unknown_name():
@@ -166,8 +165,11 @@ def test_updates_are_seen_by_the_planner():
     from logistics_agent.planner import LogisticsPlanner
 
     reasoner = Reasoner()
-    _, before = LogisticsPlanner(reasoner.world).plan()
+    lp = LogisticsPlanner(reasoner.world)
+    lp.set_current([At(entity1=reasoner.find_entity("package1"), entity2=reasoner.find_entity("office_seattle"))])
+    lp.set_goal([At(entity1=reasoner.find_entity("package1"), entity2=reasoner.find_entity("office_san_francisco"))])
+    _, before = lp.plan()
     reasoner.update_entity(GasPrice(name="gas_price", per_mile=1.0))
-    _, after = LogisticsPlanner(reasoner.world).plan()
+    _, after = lp.plan()
     assert before == pytest.approx(830)
     assert after > before

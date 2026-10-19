@@ -224,11 +224,12 @@ def test_reasoner_world_is_the_static_configuration_plus_the_initial_state():
     assert world.items - static.items == set(world.by(At))
 
 
-def test_reasoner_starts_with_the_package_and_every_vehicle_placed():
+def test_reasoner_starts_with_every_vehicle_placed_and_the_package_nowhere():
     snapshot = Reasoner().world.snapshot
-    assert {thing: location_of(snapshot, thing) for thing in ("package1", "truck1", "truck2", "air1")} == {
-        "package1": "office_seattle", "truck1": "SEA", "truck2": "SFO", "air1": "SEA",
+    assert {thing: location_of(snapshot, thing) for thing in ("truck1", "truck2", "air1")} == {
+        "truck1": "SEA", "truck2": "SFO", "air1": "SEA",
     }
+    assert not list(snapshot.by(At, lambda a: a.entity1.name == "package1"))
 
 
 def test_each_reasoner_maintains_its_own_world_graph():
@@ -245,19 +246,72 @@ def test_planner_plans_over_the_world_it_is_given():
 
 @pytest.fixture
 def planned() -> tuple[list[Any], float]:
-    """a plan toward the planner's default goal"""
-    plan, cost = LogisticsPlanner(Reasoner().world).plan()
+    """a plan for the package from the Seattle office to the San Francisco office"""
+    plan, cost = to_san_francisco(package_in_seattle(LogisticsPlanner(Reasoner().world))).plan()
     return list(plan), cost
 
 
-def test_planner_starts_with_package1_at_the_san_francisco_office():
-    [goal] = LogisticsPlanner(Reasoner().world).goal
-    assert (goal.entity1.name, goal.entity2.name) == ("package1", "office_san_francisco")
+def to_san_francisco(lp: LogisticsPlanner) -> LogisticsPlanner:
+    """sets the planner's goal to package1 at the San Francisco office"""
+    lp.set_goal([At(entity1=entity(lp.world, "package1"), entity2=entity(lp.world, "office_san_francisco"))])
+    return lp
 
 
-def test_set_goal_replaces_the_default_goal():
+def package_in_seattle(lp: LogisticsPlanner) -> LogisticsPlanner:
+    """sets the planner's current facts to package1 at the Seattle office"""
+    lp.set_current([At(entity1=entity(lp.world, "package1"), entity2=entity(lp.world, "office_seattle"))])
+    return lp
+
+
+def test_planner_starts_with_no_current_facts():
+    assert LogisticsPlanner(Reasoner().world).current is None
+
+
+def test_planning_starts_from_the_world_graph_without_current_facts():
     world = Reasoner().world
-    lp = LogisticsPlanner(world)
+    assert LogisticsPlanner(world).start() == world.snapshot
+
+
+def test_planning_starts_from_the_world_graph_plus_the_current_facts():
+    world = Reasoner().world
+    lp = package_in_seattle(LogisticsPlanner(world))
+    start = lp.start()
+    assert world.snapshot <= start
+    assert location_of(start, "package1") == "office_seattle"
+    assert not list(world.snapshot.by(At, lambda a: a.entity1.name == "package1"))
+
+
+def test_without_knowing_where_the_package_is_there_is_no_plan():
+    with pytest.raises(RuntimeError, match="Plan not available"):
+        to_san_francisco(LogisticsPlanner(Reasoner().world)).plan()
+
+
+def test_current_facts_change_where_the_plan_starts():
+    """with the package at the Denver office, the first load happens there, and the plan costs more than from
+    Seattle because a truck must first drive to Denver"""
+    world = Reasoner().world
+    lp = to_san_francisco(LogisticsPlanner(world))
+    lp.set_current([At(entity1=entity(world, "package1"), entity2=entity(world, "office_denver"))])
+    plan, cost = lp.plan()
+    [first_load, *_] = [a for a in plan if isinstance(a, LoadAction)]
+    assert first_load.location.name == "office_denver"
+    assert isinstance(plan[-1], UnloadAction) and plan[-1].location.name == "office_san_francisco"
+    assert cost > 830
+
+
+def test_planner_starts_with_no_goal():
+    assert LogisticsPlanner(Reasoner().world).goal is None
+
+
+def test_planning_without_a_goal_fails():
+    lp = package_in_seattle(LogisticsPlanner(Reasoner().world))
+    with pytest.raises(AssertionError, match="set_goal"):
+        lp.plan()
+
+
+def test_set_goal_sets_where_the_plan_ends():
+    world = Reasoner().world
+    lp = package_in_seattle(LogisticsPlanner(world))
     lp.set_goal([At(entity1=entity(world, "package1"), entity2=entity(world, "office_denver"))])
     plan, _ = lp.plan()
     assert isinstance(plan[-1], UnloadAction) and plan[-1].location.name == "office_denver"
@@ -306,7 +360,7 @@ def test_planner_satisfies_every_goal_fact():
     """the package must reach the San Francisco office and the airplane must end at SFO, so flying the package
     along (879) beats driving it and flying the airplane empty (830 + 309)"""
     world = Reasoner().world
-    lp = LogisticsPlanner(world)
+    lp = package_in_seattle(LogisticsPlanner(world))
     lp.set_goal([
         At(entity1=entity(world, "package1"), entity2=entity(world, "office_san_francisco")),
         At(entity1=entity(world, "air1"), entity2=entity(world, "SFO")),

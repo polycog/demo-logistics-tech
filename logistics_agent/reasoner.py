@@ -1,4 +1,4 @@
-"""the reasoner of the pricing support cogent, in charge of maintaining the world graph"""
+"""the reasoner of the logistics support cogent, in charge of maintaining the world graph"""
 
 from typing import Any
 
@@ -24,8 +24,7 @@ class Reasoner:
     the world graph is built in two parts:
     static configuration: what does not change while the cogent runs: offices, airports, vehicles, the package,
         truck and air routes, the gas price and labor costs (configure_world_graph)
-    initial state: where the package and each vehicle start, which changes as deliveries happen
-        (set_initial_state)
+    initial state: where each vehicle starts, which changes as deliveries happen (set_initial_state)
     """
 
     def __init__(self) -> None:
@@ -130,13 +129,12 @@ class Reasoner:
         return world
 
     def set_initial_state(self) -> None:
-        """places the package and each vehicle where they start: the package at the Seattle office, truck1 and
-        air1 at SEA, and truck2 at SFO"""
+        """places each vehicle where it starts: truck1 and air1 at SEA, and truck2 at SFO; where a package is comes
+        from the human, through the planner's current facts"""
 
         def entity(name: str) -> Any:
             return self.world.get_entity(name, linked=False)
 
-        self.world.add_relation(At(entity1=entity("package1"), entity2=entity("office_seattle")))
         self.world.add_relation(At(entity1=entity("truck1"), entity2=entity("SEA")))
         self.world.add_relation(At(entity1=entity("truck2"), entity2=entity("SFO")))
         self.world.add_relation(At(entity1=entity("air1"), entity2=entity("SEA")))

@@ -1,4 +1,4 @@
-"""language understanding and generation for the pricing support agent, built on cognition's language tools"""
+"""language understanding and generation for the logistics support agent, built on cognition's language tools"""
 
 import os
 import tomllib
@@ -55,6 +55,10 @@ class HumanIntent(DocEnum):
     STATE_DESIRED_OUTCOME = (
         "state_desired_outcome",
         "human says what outcome they want, for example where a package should end up or by when",
+    )
+    STATE_CURRENT_LOCATION = (
+        "state_current_location",
+        "human says where a package is right now, before it is delivered, for example that it is at an office",
     )
     ASK_ABOUT_ENTITIES = (
         "ask_about_entities",
@@ -160,20 +164,18 @@ class EntityChange(BaseModel):
 
 
 class AtFact(BaseModel):
-    """one fact the human wants to hold once the delivery is done: a package or vehicle is at a place"""
+    """one fact about where a package or vehicle is: entity1 is at entity2"""
 
     entity1: str = Field(description="name of the package or vehicle, exactly as listed in the known entities")
     entity2: str = Field(
-        description="name of the office, airport, or vehicle it should be at, exactly as listed in the known entities"
+        description="name of the office, airport, or vehicle it is at, exactly as listed in the known entities"
     )
 
 
-class DesiredOutcome(BaseModel):
-    """outcome the human wants the delivery to achieve, as facts about where things should end up"""
+class AtFacts(BaseModel):
+    """facts about where packages or vehicles are, naming things by name"""
 
-    facts: list[AtFact] = Field(
-        description="where each package or vehicle should end up; empty if the human did not say"
-    )
+    facts: list[AtFact]
 
     def to_relations(self, find_entity: Callable[[str], Entity | None]) -> list[At]:
         """resolves the named facts into At relations, looking each name up with find_entity (such as the reasoner's,
@@ -187,6 +189,23 @@ class DesiredOutcome(BaseModel):
             return entity
 
         return [At(entity1=resolve(fact.entity1), entity2=resolve(fact.entity2)) for fact in self.facts]
+
+
+class DesiredOutcome(AtFacts):
+    """outcome the human wants the delivery to achieve, as facts about where things should end up"""
+
+    facts: list[AtFact] = Field(
+        description="where each package or vehicle should end up once delivered; empty if the human did not say"
+    )
+
+
+class CurrentLocation(AtFacts):
+    """where the human says packages are right now, before they are delivered"""
+
+    facts: list[AtFact] = Field(
+        description="where each package is right now, before it is delivered, such as the place it is shipped from; "
+        "empty if the human did not say"
+    )
 
 
 def known_entities(world: WorldGraph) -> list[str]:

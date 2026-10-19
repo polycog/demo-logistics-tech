@@ -1,7 +1,7 @@
 [project]
 name = "demo-logistics-tech"
 version = "0.1.0"
-description = "A pricing support agent for a small logistics network, built with polycog cognition"
+description = "A logistics support agent for a small logistics network, built with polycog cognition"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

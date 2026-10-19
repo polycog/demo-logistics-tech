@@ -1,18 +1,22 @@
-"""pricing support cogent that talks to a human through the terminal: its terminal interface to the human,
+"""logistics support cogent that talks to a human through the terminal: its terminal interface to the human,
 the builders that put the decision process and the cogent together, and the loop that runs it"""
 
 from cognition import Actuator, Cogent, DecisionProcess, DecisionProcessErrorMessage, Sensor
 
 from logistics_agent.communicator import Utterance
 from logistics_agent.conductor import (
+    AskWhereThePackageGoes,
+    AskWhereThePackageIs,
     ConversationState,
     Introduce,
     ReactToAddEntityIntent,
     ReactToAskAboutEntitiesIntent,
     ReactToAskCurrentStateIntent,
+    ReactToCurrentLocationIntent,
     ReactToDesiredOutcomeIntent,
     ReactToEstimateCostIntent,
     ReactToUpdateEntityIntent,
+    ReadPriceRequest,
     RecognizeIntent,
     RespondUnknown,
     SayGoodbye,
@@ -63,8 +67,12 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     dp.add_operator(Introduce("introduce", terminal=True))
     dp.add_operator(SayGoodbye("say_goodbye", terminal=True))
     dp.add_operator(RecognizeIntent("recognize_intent"))
+    dp.add_operator(ReadPriceRequest("read_price_request"))
     dp.add_operator(ReactToEstimateCostIntent("react_to_estimate_cost_intent", terminal=True))
+    dp.add_operator(AskWhereThePackageIs("ask_where_the_package_is", terminal=True))
+    dp.add_operator(AskWhereThePackageGoes("ask_where_the_package_goes", terminal=True))
     dp.add_operator(ReactToDesiredOutcomeIntent("react_to_desired_outcome_intent", terminal=True))
+    dp.add_operator(ReactToCurrentLocationIntent("react_to_current_location_intent", terminal=True))
     dp.add_operator(ReactToAskAboutEntitiesIntent("react_to_ask_about_entities_intent", terminal=True))
     dp.add_operator(ReactToAskCurrentStateIntent("react_to_ask_current_state_intent", terminal=True))
     dp.add_operator(ReactToAddEntityIntent("react_to_add_entity_intent", terminal=True))
@@ -76,7 +84,7 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
 def build_assistant() -> tuple[Cogent[DecisionProcess[ConversationState]], ConversationState]:
     """builds the cogent around the decision process, with the terminal interaction as its sensor and actuator"""
     dp, state = build_decision_process()
-    assistant: Cogent[DecisionProcess[ConversationState]] = Cogent(decision_process=dp, name="pricing_support_agent")
+    assistant: Cogent[DecisionProcess[ConversationState]] = Cogent(decision_process=dp, name="logistics_support_agent")
     interaction = HumanInteraction()
     assistant.add_sensor(interaction).add_actuator(interaction)
     return assistant, state

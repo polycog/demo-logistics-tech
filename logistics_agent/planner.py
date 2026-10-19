@@ -199,14 +199,12 @@ class EvolverUnloadPackage(WorldEvolver[WorldSnapshot, Action]):
 class LogisticsPlanner():
 
     def __init__(self, world: WorldGraph) -> None:
-        """plans over the supplied world graph, which the caller builds and keeps up to date; starts with the
-        default goal of package1 at the San Francisco office"""
+        """plans over the supplied world graph, which the caller builds and keeps up to date; starts with no goal
+        and no current facts, which the caller sets before planning"""
         self.world = world
         self.configure_world_model()
-        self.goal: tuple[At, ...] = (
-            At(entity1=world.get_entity("package1", linked=False),
-               entity2=world.get_entity("office_san_francisco", linked=False)),
-        )
+        self.goal: tuple[At, ...] | None = None
+        self.current: tuple[At, ...] | None = None
 
     def configure_world_model(self) -> None:
         self.dynamics = [EvolverDriveTruckLocal,
@@ -219,9 +217,21 @@ class LogisticsPlanner():
         """sets the facts that must all hold at the end of the plan, such as where a package should be"""
         self.goal = tuple(facts)
 
+    def set_current(self, facts: Iterable[At]) -> None:
+        """sets the facts that hold at the start of the plan on top of the world graph, such as where a package
+        is now"""
+        self.current = tuple(facts)
+
+    def start(self) -> WorldSnapshot:
+        """the snapshot planning starts from: the world graph, plus the current facts if they are set"""
+        snapshot = self.world.snapshot
+        if self.current is None:
+            return snapshot
+        return WorldSnapshot.click(*snapshot.items, *self.current)
+
     def plan(self) -> tuple[Sequence[Action], float]:
         planner = SearchPlanner(
-                self.world.snapshot,
+                self.start(),
                 self.create_goal_check(),
                 dynamic_opts_succession(EvolverDriveTruckLocal,
                                         EvolverFlyAirplane,
@@ -234,6 +244,7 @@ class LogisticsPlanner():
 
     def create_goal_check(self) -> Callable[[WorldSnapshot], bool]:
         """builds the planner's goal test from the goal facts"""
+        assert self.goal is not None, "set_goal must be called before planning"
         desired = WorldSnapshot.click(*self.goal)
         def reached_desired(snapshot: WorldSnapshot) -> bool:
             """returns True if the snapshot contains all of the desired facts"""
@@ -245,7 +256,10 @@ if __name__ == "__main__":
     from logistics_agent.reasoner import Reasoner
 
     world = Reasoner().world
+    package1 = world.get_entity("package1", linked=False)
     lp = LogisticsPlanner(world)
+    lp.set_current([At(entity1=package1, entity2=world.get_entity("office_seattle", linked=False))])
+    lp.set_goal([At(entity1=package1, entity2=world.get_entity("office_san_francisco", linked=False))])
     plan, cost = lp.plan()
     for action in plan:
         print(action)

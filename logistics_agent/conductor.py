@@ -1,4 +1,4 @@
-"""decision process of the pricing support cogent: the conversation state it keeps, and the operators that
+"""decision process of the logistics support cogent: the conversation state it keeps, and the operators that
 decide what to do with each utterance"""
 
 import re
@@ -13,7 +13,6 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from logistics_agent.communicator import (
     DEFAULT_LLM,
-    DesiredOutcome,
     EntityChange,
     EntityKind,
     EntityQuery,
@@ -24,12 +23,14 @@ from logistics_agent.communicator import (
     known_entities,
 )
 from logistics_agent.domain import At
+from logistics_agent.extract_and_set_current import ASK_WHERE, ExtractAndSetCurrent
+from logistics_agent.extract_and_set_goal import ASK_AGAIN, ExtractAndSetGoal
 from logistics_agent.planner import LogisticsPlanner
 from logistics_agent.reasoner import Reasoner
 
 QUIT_PHRASES = {"quit", "exit", "bye", "goodbye"}
 QUIT_PATTERN = re.compile(rf"\b({'|'.join(QUIT_PHRASES)})\b", re.IGNORECASE)
-INTRODUCTION = "Hi - I am your pricing support agent. I can help you estimate prices for various deliveries."
+INTRODUCTION = "Hi - I am your logistics support agent. I can help you estimate prices for various deliveries."
 
 
 @dataclass
@@ -40,6 +41,8 @@ class ConversationState:
     done: bool = False
     human_utterance: Utterance | None = None
     human_intent: HumanIntent | None = None
+    # whether the where-from and where-to of the current price request have been read into the planner
+    price_request_read: bool = False
 
     reasoner: Reasoner = field(default_factory=Reasoner)
     planner: LogisticsPlanner = field(init=False)
@@ -113,68 +116,172 @@ class RecognizeIntent(Operator[ConversationState]):
         state.human_utterance = utterance
         state.human_intent, _confidence = self._intent_classifier(utterance.phrase, DEFAULT_LLM, num_trials=1)
 
+class ReadPriceRequest(Operator[ConversationState]):
+    """
+    WHEN: the human asked for a price estimate, and the request has not been read yet
+    THEN: run the ExtractAndSetCurrent and ExtractAndSetGoal sub-processes on the request, so any where-from and
+          where-to it mentions ("from seattle to denver") update the planner; say nothing yet
+    """
+
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        """sets up both sub-processes once; they are restarted for every request"""
+        super().__init__(name, **kwargs)
+        self._extract_and_set_current = ExtractAndSetCurrent()
+        self._extract_and_set_goal = ExtractAndSetGoal()
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies once per price request, before it is answered"""
+        return state.human_intent is HumanIntent.GET_PRICE_ESTIMATE and not state.price_request_read
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """sets the planner's current facts and goal from the request where it mentions them, keeping what the planner
+        already has where it does not; the sub-processes' replies are not said"""
+        assert state.human_utterance is not None
+        self._extract_and_set_current.reinit()
+        self._extract_and_set_current(location=state.human_utterance, reasoner=state.reasoner, planner=state.planner)
+        self._extract_and_set_goal.reinit()
+        self._extract_and_set_goal(outcome=state.human_utterance, reasoner=state.reasoner, planner=state.planner)
+        state.price_request_read = True
+
+
 class ReactToEstimateCostIntent(Operator[ConversationState]):
     """
-    WHEN: the human asked for a price estimate
+    WHEN: the human asked for a price estimate, the request has been read, and the planner knows both where the
+          package is and where it should go
     THEN: plan the delivery with the planner, reply with a description of the plan and its cost, and get ready for
           the next utterance
     """
 
-    TASK_DESC = "a pricing support agent is telling a human how it would deliver a package, and that it costs {cost} in total. Describe the plan as a compact list with step number, step action, and step cost. End with a final estimate."
+    LTASK_DESC = "a logistics support agent is telling a human how it would deliver a package, and that it costs {cost} in total. Describe the plan as a list with step number, step action, and step cost. End with a final estimate as a dollar value"
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is a price estimate"""
-        return state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
+        """applies to a read price request when the planner's current facts and goal are both set"""
+        return (
+            state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
+            and state.price_request_read
+            and state.planner.current is not None
+            and state.planner.goal is not None
+        )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """plans toward the planner's current goal, replies with a natural language description of the plan and its
-        cost, and clears the utterance"""
-        plan, cost = state.planner.plan()
-        action_sq = [action for action in plan]
-        description = describe_facts(action_sq, self.TASK_DESC.format(cost=cost), DEFAULT_LLM)
-        io.o.interaction(Utterance(phrase=description))
+        """plans from the planner's current facts toward its goal, replies with a natural language description of the
+        plan and its cost, and clears the utterance; says so when no plan reaches the goal"""
+        try:
+            plan, cost = state.planner.plan()
+        except RuntimeError:
+            reply = "Sorry, I could not find a way to deliver that with the vehicles we have."
+        else:
+            action_sq = [action for action in plan]
+            reply = describe_facts(action_sq, self.LTASK_DESC.format(cost=cost), DEFAULT_LLM)
+        io.o.interaction(Utterance(phrase=reply))
         state.human_utterance = None
         state.human_intent = None
+        state.price_request_read = False
+
+
+class AskWhereThePackageIs(Operator[ConversationState]):
+    """
+    WHEN: the human asked for a price estimate, the request has been read, and the planner still does not know where
+          the package is
+    THEN: ask the human where the package is now, and get ready for the next utterance
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to a read price request when the planner's current facts are not set"""
+        return (
+            state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
+            and state.price_request_read
+            and state.planner.current is None
+        )
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """asks where the package is, and clears the utterance"""
+        io.o.interaction(Utterance(phrase="Where is the package now? Tell me, and then ask me for the estimate again."))
+        state.human_utterance = None
+        state.human_intent = None
+        state.price_request_read = False
+
+
+class AskWhereThePackageGoes(Operator[ConversationState]):
+    """
+    WHEN: the human asked for a price estimate, the request has been read, and the planner knows where the package is
+          but not where it should go
+    THEN: ask the human where the package should go, and get ready for the next utterance
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to a read price request when the planner's current facts are set but its goal is not; where the
+        package is gets asked first"""
+        return (
+            state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
+            and state.price_request_read
+            and state.planner.current is not None
+            and state.planner.goal is None
+        )
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """asks where the package should go, and clears the utterance"""
+        io.o.interaction(Utterance(phrase="Where should the package go? Tell me, and then ask me for the estimate again."))
+        state.human_utterance = None
+        state.human_intent = None
+        state.price_request_read = False
 
 
 class ReactToDesiredOutcomeIntent(Operator[ConversationState]):
     """
     WHEN: the human said what outcome they want
-    THEN: turn the outcome into goal facts for the planner, confirm it back to the human, and get ready for the
-          next utterance
+    THEN: hand the outcome to the ExtractAndSetGoal sub-process, which turns it into the planner's goal and words the
+          reply; say the reply, and get ready for the next utterance
     """
 
-    TASK_DESC = (
-        "a human is telling a logistics support agent where they want packages or vehicles to end up; "
-        "the agent has one office and one airport in each city it serves, and a package sent to a city "
-        "should end up at that city's office unless the human names the airport or a vehicle"
-    )
-
     def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the outcome populator once, so its prompt is reused for every utterance"""
+        """sets up the ExtractAndSetGoal sub-process once; it is restarted for every outcome"""
         super().__init__(name, **kwargs)
-        self._outcome_populator = ModelPopulator(DesiredOutcome, task_desc=self.TASK_DESC)
+        self._extract_and_set_goal = ExtractAndSetGoal()
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
         """applies when the recognized intent of the current utterance is a desired outcome"""
         return state.human_intent is HumanIntent.STATE_DESIRED_OUTCOME
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """extracts the At facts the human wants to hold, sets them as the planner's goal, confirms them, and
-        clears the utterance; asks again when the human named nothing the cogent knows"""
+        """runs the sub-process on the outcome, says its reply, and clears the utterance; asks again when the
+        sub-process fails, for example when the language model returns something unusable"""
         assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        world = state.reasoner.world
-        outcome = self._outcome_populator(state.human_utterance.phrase, DEFAULT_LLM, *known_entities(world))
-        try:
-            goal = outcome.to_relations(state.reasoner.find_entity)
-        except (KeyError, ValidationError):
-            goal = []
-        if not goal:
-            reply = "Sorry, I did not catch where things should end up. Where should the package go?"
-        else:
-            state.planner.set_goal(goal)
-            outcomes = "; ".join(f"the {fact.entity1.display_name} at the {fact.entity2.display_name}" for fact in goal)
-            reply = f"Got it: {outcomes}. Ask me for a price estimate whenever you are ready."
+        self._extract_and_set_goal.reinit()
+        result = self._extract_and_set_goal(
+            outcome=state.human_utterance, reasoner=state.reasoner, planner=state.planner
+        )
+        reply = result.reply if result is not None and result.reply is not None else ASK_AGAIN
+        io.o.interaction(Utterance(phrase=reply))
+        state.human_utterance = None
+        state.human_intent = None
+
+
+class ReactToCurrentLocationIntent(Operator[ConversationState]):
+    """
+    WHEN: the human said where a package is right now
+    THEN: hand the utterance to the ExtractAndSetCurrent sub-process, which turns it into the planner's current facts
+          and words the reply; say the reply, and get ready for the next utterance
+    """
+
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        """sets up the ExtractAndSetCurrent sub-process once; it is restarted for every utterance"""
+        super().__init__(name, **kwargs)
+        self._extract_and_set_current = ExtractAndSetCurrent()
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies when the recognized intent of the current utterance is stating where a package is"""
+        return state.human_intent is HumanIntent.STATE_CURRENT_LOCATION
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """runs the sub-process on the utterance, says its reply, and clears the utterance; asks where the package
+        is when the sub-process fails"""
+        assert state.human_utterance is not None and state.human_utterance.phrase is not None
+        self._extract_and_set_current.reinit()
+        result = self._extract_and_set_current(
+            location=state.human_utterance, reasoner=state.reasoner, planner=state.planner
+        )
+        reply = result.reply if result is not None and result.reply is not None else ASK_WHERE
         io.o.interaction(Utterance(phrase=reply))
         state.human_utterance = None
         state.human_intent = None
