@@ -1,0 +1,29 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# type checkers, linters, test caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# packaging
+build/
+dist/
+*.egg-info/
+
+# secrets (API keys for the LLM)
+.env
+.env.*
+
+# editors and OS
+.vscode/
+.idea/
+.DS_Store
