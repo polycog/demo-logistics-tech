@@ -3,8 +3,8 @@ the builders that put the decision process and the cogent together, and the loop
 
 from cognition import Actuator, Cogent, DecisionProcess, DecisionProcessErrorMessage, Sensor
 
-from communicator import Utterance
-from conductor import (
+from logistics_agent.communicator import Utterance
+from logistics_agent.conductor import (
     ConversationState,
     Introduce,
     ReactToAddEntityIntent,

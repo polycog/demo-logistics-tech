@@ -3,8 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from domain import Airplane, At, GasPrice, Office, Package, Truck, Vehicle
-from reasoner import Reasoner
+from logistics_agent.domain import Airplane, At, GasPrice, Office, Package, Truck, Vehicle
+from logistics_agent.reasoner import Reasoner
 
 
 def pairs(relations) -> set[tuple[str, str]]:
@@ -163,7 +163,7 @@ def test_update_entity_refuses_a_change_of_type():
 
 def test_updates_are_seen_by_the_planner():
     """the planner plans over the same world graph, so a pricier gas price makes the drive cost more"""
-    from planner import LogisticsPlanner
+    from logistics_agent.planner import LogisticsPlanner
 
     reasoner = Reasoner()
     _, before = LogisticsPlanner(reasoner.world).plan()

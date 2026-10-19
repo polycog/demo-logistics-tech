@@ -11,9 +11,9 @@ from collections import deque
 import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-import assistant
-import conductor
-from communicator import (
+from logistics_agent import assistant
+from logistics_agent import conductor
+from logistics_agent.communicator import (
     AtFact,
     DesiredOutcome,
     EntityChange,
@@ -25,7 +25,7 @@ from communicator import (
     Utterance,
     known_entities,
 )
-from conductor import (
+from logistics_agent.conductor import (
     INTRODUCTION,
     ConversationState,
     Introduce,
@@ -39,7 +39,7 @@ from conductor import (
     RespondUnknown,
     SayGoodbye,
 )
-from domain import At, DriveLongDistanceAction, GasPrice, Package, Truck, UnloadAction
+from logistics_agent.domain import At, DriveLongDistanceAction, GasPrice, Package, Truck, UnloadAction
 
 PRICE = "how much to ship a package from seattle to san francisco?"
 GIBBERISH = "what is the capital of france?"

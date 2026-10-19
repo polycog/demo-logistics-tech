@@ -30,19 +30,20 @@ git clone https://github.com/polycog/demo-logistics-tech.git
 cd demo-logistics-tech
 uv sync                                  # creates .venv with Python 3.13+ and all dependencies
 export OPENAI_API_KEY=sk-...             # or use a local model, see below
-uv run python assistant.py
+uv run logistics-agent
 ```
 
 Type your questions at the `you>` prompt. Type `quit`, `exit`, or `bye` (or press Ctrl+D) to stop.
 
 ### Without uv
 
-The only dependencies are `polycog-cognition` and pydantic-ai's OpenAI client, both on PyPI:
+The only dependencies are `polycog-cognition` and pydantic-ai's OpenAI client, both on PyPI. Installing the
+project with pip pulls them in and adds the `logistics-agent` command:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Python 3.13 or newer
-pip install polycog-cognition "pydantic-ai-slim[openai]"
-python assistant.py
+pip install -e .
+logistics-agent
 ```
 
 ## Choosing a language model
@@ -68,7 +69,7 @@ api_key = "lm-studio"        # LM Studio accepts any key
 To switch for a single run without editing the file, set `LLM_PROVIDER`:
 
 ```bash
-LLM_PROVIDER=local uv run python assistant.py
+LLM_PROVIDER=local uv run logistics-agent
 ```
 
 Smaller local models are less reliable at producing structured output than `gpt-4o`, so expect the occasional
@@ -104,7 +105,14 @@ sequence of drives, flights, loads, and unloads that reaches the goal.
 
 ## How it works
 
-Each module has one job:
+The agent lives in the `logistics_agent` package, one job per module:
+
+```
+logistics_agent/   the agent
+tests/             offline tests
+llm_config.toml    which language model to use
+pyproject.toml     dependencies and the logistics-agent command
+```
 
 | Module | Role |
 | --- | --- |

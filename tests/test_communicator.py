@@ -6,9 +6,9 @@ import pytest
 from pydantic import ValidationError
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
-from communicator import LLM_CONFIG, AtFact, DesiredOutcome, EntityKind, HumanIntent, known_entities, load_llm
-from domain import Airplane, Airport, At, GasPrice, LaborCost, Office, Package, Truck, Vehicle
-from reasoner import Reasoner
+from logistics_agent.communicator import LLM_CONFIG, AtFact, DesiredOutcome, EntityKind, HumanIntent, known_entities, load_llm
+from logistics_agent.domain import Airplane, Airport, At, GasPrice, LaborCost, Office, Package, Truck, Vehicle
+from logistics_agent.reasoner import Reasoner
 
 
 def test_every_intent_has_a_description():

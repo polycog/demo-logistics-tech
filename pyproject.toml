@@ -11,14 +11,21 @@ dependencies = [
     "pydantic-ai-slim[openai]",
 ]
 
+[project.scripts]
+logistics-agent = "logistics_agent.assistant:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14"]
+build-backend = "uv_build"
+
 [dependency-groups]
 dev = [
     "pytest>=9",
 ]
 
-[tool.uv]
-# a demo of flat modules, not a library: uv installs the dependencies without building this project
-package = false
+[tool.uv.build-backend]
+module-name = "logistics_agent"
+module-root = ""
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

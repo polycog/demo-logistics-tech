@@ -12,9 +12,10 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from domain import Airplane, Airport, At, City, GasPrice, LaborCost, Office, Package, Truck, Vehicle
+from logistics_agent.domain import Airplane, Airport, At, City, GasPrice, LaborCost, Office, Package, Truck, Vehicle
 
-LLM_CONFIG = Path(__file__).with_name("llm_config.toml")
+# the config lives at the root of the repository, next to pyproject.toml
+LLM_CONFIG = Path(__file__).resolve().parent.parent / "llm_config.toml"
 
 
 def load_llm(config_path: Path = LLM_CONFIG) -> Model:

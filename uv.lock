@@ -160,7 +160,7 @@ wheels = [
 [[package]]
 name = "demo-logistics-tech"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "polycog-cognition" },
     { name = "pydantic-ai-slim", extra = ["openai"] },

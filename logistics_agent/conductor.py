@@ -11,7 +11,7 @@ from cognition import Entity
 from pydantic import ValidationError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from communicator import (
+from logistics_agent.communicator import (
     DEFAULT_LLM,
     DesiredOutcome,
     EntityChange,
@@ -23,9 +23,9 @@ from communicator import (
     Utterance,
     known_entities,
 )
-from domain import At
-from planner import LogisticsPlanner
-from reasoner import Reasoner
+from logistics_agent.domain import At
+from logistics_agent.planner import LogisticsPlanner
+from logistics_agent.reasoner import Reasoner
 
 QUIT_PHRASES = {"quit", "exit", "bye", "goodbye"}
 QUIT_PATTERN = re.compile(rf"\b({'|'.join(QUIT_PHRASES)})\b", re.IGNORECASE)

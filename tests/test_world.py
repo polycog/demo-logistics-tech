@@ -5,12 +5,12 @@ from typing import Any
 import pytest
 from cognition import WorldGraph, WorldSnapshot
 
-from domain import (
+from logistics_agent.domain import (
     AirRoute, Airplane, Airport, At, City, DriveLocalAction, DriveLongDistanceAction, FlyAction, GasPrice, LaborCost, LoadAction, Office,
     Package, Truck, TruckRoute, UnloadAction,
 )
-from reasoner import Reasoner
-from planner import (
+from logistics_agent.reasoner import Reasoner
+from logistics_agent.planner import (
     EvolverDriveTruckLocal,
     EvolverDriveTruckLongDistance,
     EvolverFlyAirplane,

@@ -1,7 +1,7 @@
 # which language model the agent talks through
 #
 # provider picks one of the sections below: "openai" or "local"
-# the LLM_PROVIDER environment variable overrides it for one run, e.g. LLM_PROVIDER=openai python assistant.py
+# the LLM_PROVIDER environment variable overrides it for one run, e.g. LLM_PROVIDER=openai uv run logistics-agent
 provider = "openai"
 
 # OpenAI's hosted models; the API key is read from the OPENAI_API_KEY environment variable

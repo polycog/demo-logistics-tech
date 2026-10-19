@@ -4,7 +4,7 @@ from typing import Any
 
 from cognition import BinaryRelation, Entity, WorldGraph
 
-from domain import At, GasPrice, LaborCost, Package, Truck, Airplane, Office, Airport, AirRoute, TruckRoute, City
+from logistics_agent.domain import At, GasPrice, LaborCost, Package, Truck, Airplane, Office, Airport, AirRoute, TruckRoute, City
 
 
 def _normalize(name: str) -> str:

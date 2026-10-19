@@ -4,8 +4,8 @@ from typing import Any, cast, Iterable, Self, Callable, Sequence
 
 from cognition.reasoning.planning import FrontierManager, PriorityQueue
 from cognition.util.functypes import Predicate, Supplier
-from domain import GasPrice, LaborCost, Package, Vehicle, Truck, Airplane, Office, Airport, At, AirRoute, TruckRoute
-from domain import Action, DriveLocalAction, DriveLongDistanceAction, FlyAction, LoadAction, UnloadAction
+from logistics_agent.domain import GasPrice, LaborCost, Package, Vehicle, Truck, Airplane, Office, Airport, At, AirRoute, TruckRoute
+from logistics_agent.domain import Action, DriveLocalAction, DriveLongDistanceAction, FlyAction, LoadAction, UnloadAction
 
 
 class EvolverDriveTruckLocal(WorldEvolver[WorldSnapshot, Action]):
@@ -242,7 +242,7 @@ class LogisticsPlanner():
 
 
 if __name__ == "__main__":
-    from reasoner import Reasoner
+    from logistics_agent.reasoner import Reasoner
 
     world = Reasoner().world
     lp = LogisticsPlanner(world)
