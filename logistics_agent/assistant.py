@@ -5,19 +5,17 @@ from cognition import Actuator, Cogent, DecisionProcess, DecisionProcessErrorMes
 
 from logistics_agent.communicator import Utterance
 from logistics_agent.conductor import (
-    AskWhereThePackageGoes,
-    AskWhereThePackageIs,
+    Acknowledge,
+    AskForShippingRequest,
     ConversationState,
+    DescribePlan,
     Introduce,
-    ReactToAddEntityIntent,
-    ReactToAskAboutEntitiesIntent,
-    ReactToAskCurrentStateIntent,
-    ReactToCurrentLocationIntent,
-    ReactToDesiredOutcomeIntent,
-    ReactToEstimateCostIntent,
-    ReactToUpdateEntityIntent,
-    ReadPriceRequest,
+    ReactToAskCapabilitiesIntent,
+    ReactToEstimatePriceIntent,
+    ReactToGreetingIntent,
+    ReactToShippingRequestIntent,
     RecognizeIntent,
+    Reply,
     RespondUnknown,
     SayGoodbye,
 )
@@ -66,18 +64,20 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     dp = DecisionProcess[ConversationState](lambda: state)
     dp.add_operator(Introduce("introduce", terminal=True))
     dp.add_operator(SayGoodbye("say_goodbye", terminal=True))
+    dp.add_operator(Acknowledge("acknowledge", terminal=True))
     dp.add_operator(RecognizeIntent("recognize_intent"))
-    dp.add_operator(ReadPriceRequest("read_price_request"))
-    dp.add_operator(ReactToEstimateCostIntent("react_to_estimate_cost_intent", terminal=True))
-    dp.add_operator(AskWhereThePackageIs("ask_where_the_package_is", terminal=True))
-    dp.add_operator(AskWhereThePackageGoes("ask_where_the_package_goes", terminal=True))
-    dp.add_operator(ReactToDesiredOutcomeIntent("react_to_desired_outcome_intent", terminal=True))
-    dp.add_operator(ReactToCurrentLocationIntent("react_to_current_location_intent", terminal=True))
-    dp.add_operator(ReactToAskAboutEntitiesIntent("react_to_ask_about_entities_intent", terminal=True))
-    dp.add_operator(ReactToAskCurrentStateIntent("react_to_ask_current_state_intent", terminal=True))
-    dp.add_operator(ReactToAddEntityIntent("react_to_add_entity_intent", terminal=True))
-    dp.add_operator(ReactToUpdateEntityIntent("react_to_update_entity_intent", terminal=True))
-    dp.add_operator(RespondUnknown("respond_unknown", terminal=True))
+    dp.add_operator(RespondUnknown("respond_unknown"))
+    # small talk
+    dp.add_operator(ReactToGreetingIntent("react_to_greeting_intent"))
+    dp.add_operator(ReactToAskCapabilitiesIntent("react_to_ask_capabilities_intent"))
+    # taking shipping requests
+    dp.add_operator(ReactToShippingRequestIntent("react_to_shipping_request_intent"))
+    # estimating prices
+    dp.add_operator(AskForShippingRequest("ask_for_shipping_request"))
+    dp.add_operator(ReactToEstimatePriceIntent("react_to_estimate_price_intent"))
+    dp.add_operator(DescribePlan("describe_plan"))
+    # ending the turn once the stack is empty
+    dp.add_operator(Reply("reply", terminal=True))
     return dp, state
 
 

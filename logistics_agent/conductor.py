@@ -1,30 +1,23 @@
 """decision process of the logistics support cogent: the conversation state it keeps, and the operators that
-decide what to do with each utterance"""
+decide what to do with each utterance
+
+the conversation is managed with a stack of intents. The human's intents are pushed as they are recognized, and each
+intent is popped once it is done. What is on top decides what happens next.
+
+within one turn, the operators that do the work write partial responses instead of speaking; once the stack is empty,
+the turn ends with one reply that says them
+"""
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from cognition import EnumClassifier, IOContainer, ModelPopulator, Operator, describe_facts
+from cognition import EnumClassifier, IOContainer, Operator, describe_facts
 
-from cognition import Entity
-from pydantic import ValidationError
-from pydantic_ai.exceptions import UnexpectedModelBehavior
-
-from logistics_agent.communicator import (
-    DEFAULT_LLM,
-    EntityChange,
-    EntityKind,
-    EntityQuery,
-    HumanIntent,
-    NewEntity,
-    StateQuery,
-    Utterance,
-    known_entities,
-)
-from logistics_agent.domain import At
-from logistics_agent.extract_and_set_current import ASK_WHERE, ExtractAndSetCurrent
-from logistics_agent.extract_and_set_goal import ASK_AGAIN, ExtractAndSetGoal
+from logistics_agent.communicator import DEFAULT_LLM, HumanIntent, Utterance
+from logistics_agent.domain import Action, At, ShippingRequest
+from logistics_agent.extract_shipping_request import ExtractShippingRequest
 from logistics_agent.planner import LogisticsPlanner
 from logistics_agent.reasoner import Reasoner
 
@@ -32,24 +25,100 @@ QUIT_PHRASES = {"quit", "exit", "bye", "goodbye"}
 QUIT_PATTERN = re.compile(rf"\b({'|'.join(QUIT_PHRASES)})\b", re.IGNORECASE)
 INTRODUCTION = "Hi - I am your logistics support agent. I can help you estimate prices for various deliveries."
 
+# utterances that only acknowledge the agent, such as "thanks!" or "ok"; the agent answers thanks, says nothing to the
+# rest, and does not classify either
+THANKS_PHRASES = ("thanks", "thank you", "thx", "cheers")
+OK_PHRASES = ("ok", "okay", "k", "got it", "cool", "great", "sounds good", "alright", "all right", "perfect", "nice")
+ACKNOWLEDGEMENT_PATTERN = re.compile(
+    rf"\s*({'|'.join(map(re.escape, THANKS_PHRASES + OK_PHRASES))})(\s+(so much|a lot|very much))?[\s!.]*",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class ConversationState:
     """state of the conversation, kept across decision cycles"""
 
+    # whether the agent has said its introduction; Introduce applies only until it has
     introduced: bool = False
+    # whether the human said a quit phrase and the conversation is over
     done: bool = False
+    # whether the agent is waiting for the human's next utterance, rather than working on the last one
+    listening: bool = True
+    # the utterance being handled, until an operator handles it
     human_utterance: Utterance | None = None
+    # the intent recognized in human_utterance; None when no known intent matched
     human_intent: HumanIntent | None = None
-    # whether the where-from and where-to of the current price request have been read into the planner
-    price_request_read: bool = False
+    # what the conversation is about, most recent on top; the top decides what happens next
+    intent_stack: list[HumanIntent] = field(default_factory=list)
+    # what the agent will say at the end of this turn, ahead of any question
+    partial_responses: list[str] = field(default_factory=list)
+    # the question the agent ended its last turn with, if any, which the human's next utterance may answer
+    asked: str | None = None
 
+    # maintains the world graph: terminals, airports, routes, vehicles, the shipment, and costs
     reasoner: Reasoner = field(default_factory=Reasoner)
+    # plans deliveries over the reasoner's world graph, from its current facts toward its goal
     planner: LogisticsPlanner = field(init=False)
+    # the delivery the human wants priced, as extracted from what they said; None until they have described it
+    shipping_request: ShippingRequest | None = None
+    # the cheapest actions found that deliver the shipping request; None until it has been planned, or when no
+    # delivery could be planned
+    plan: Sequence[Action] | None = None
+    # what delivering the shipping request costs, in US dollars: the cost of the plan; None whenever plan is None
+    price: float | None = None
 
     def __post_init__(self) -> None:
         """the planner plans over the world graph the reasoner maintains"""
         self.planner = LogisticsPlanner(self.reasoner.world)
+
+    @property
+    def top(self) -> HumanIntent | None:
+        """the intent on top of the stack, or None when the stack is empty"""
+        return self.intent_stack[-1] if self.intent_stack else None
+
+    def push(self, intent: HumanIntent) -> None:
+        """puts the intent on top of the stack, moving it there if it is already further down"""
+        if intent in self.intent_stack:
+            self.intent_stack.remove(intent)
+        self.intent_stack.append(intent)
+
+    def pop(self, intent: HumanIntent) -> None:
+        """removes the intent from the top of the stack once it is done"""
+        assert self.top is intent, f"expected {intent} on top of {self.intent_stack}"
+        self.intent_stack.pop()
+
+    def understood(self, intent: HumanIntent) -> bool:
+        """whether there is an utterance still to handle, and the agent understood it as expressing the intent"""
+        return not self.listening and self.human_utterance is not None and self.human_intent is intent
+
+    def not_understood_any(self) -> bool:
+        """whether there is an utterance still to handle, and the agent understood it as none of the intents it knows
+        how to handle"""
+        return not self.listening and self.human_utterance is not None and self.human_intent is None
+
+    def in_focus(self, intent: HumanIntent) -> bool:
+        """whether the agent is between utterances, with the intent on top of the stack"""
+        return not self.listening and self.human_utterance is None and self.top is intent
+
+    def handled(self) -> None:
+        """forgets the utterance once it has been handled"""
+        self.human_utterance = None
+        self.human_intent = None
+
+    def say(self, io: IOContainer, asking: str | None = None) -> None:
+        """ends the turn: says the partial responses, then the question being asked, if any, and starts listening for
+        the human again; remembers the question so the answer can be understood with it"""
+        question = [asking] if asking is not None else []
+        io.o.interaction(Utterance(phrase=" ".join([*self.partial_responses, *question])))
+        self.partial_responses.clear()
+        self.listen(asking)
+
+    def listen(self, asking: str | None = None) -> None:
+        """starts listening for the human again, after something else has spoken to them; remembers the question they
+        were asked, if any, so the answer can be understood with it"""
+        self.listening = True
+        self.asked = asking
 
 
 class Introduce(Operator[ConversationState]):
@@ -64,8 +133,10 @@ class Introduce(Operator[ConversationState]):
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """says the introduction and remembers that it has been said"""
-        io.o.interaction(Utterance(phrase=INTRODUCTION))
+        state.partial_responses.append(INTRODUCTION)
+        state.say(io)
         state.introduced = True
+
 
 class SayGoodbye(Operator[ConversationState]):
     """
@@ -84,10 +155,39 @@ class SayGoodbye(Operator[ConversationState]):
         state.done = True
 
 
+def is_acknowledgement(phrase: str) -> bool:
+    """whether the whole phrase only acknowledges the agent, such as "Thanks so much!" or "ok"; "ok, ship it from
+    seattle" says more, so it is not"""
+    return ACKNOWLEDGEMENT_PATTERN.fullmatch(phrase) is not None
+
+
+class Acknowledge(Operator[ConversationState]):
+    """
+    WHEN: the agent is listening, and the human's utterance only acknowledges it, such as "thanks" or "ok"
+    THEN: reply to thanks, asking again the question the agent last asked, if any; say nothing to anything else, and
+          keep waiting for the human
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to an acknowledgement while the agent is listening"""
+        utterance: Utterance = io.i.interaction
+        return state.listening and utterance.phrase is not None and is_acknowledgement(utterance.phrase)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """replies "You're welcome." to thanks, repeating the pending question so the conversation picks up where it
+        was; leaves the state as it is for anything else, so the agent stays silent and the question stays pending"""
+        utterance: Utterance = io.i.interaction
+        assert utterance.phrase is not None
+        if utterance.phrase.strip().lower().startswith(THANKS_PHRASES):
+            state.partial_responses.append("You're welcome.")
+            state.say(io, asking=state.asked)
+
+
 class RecognizeIntent(Operator[ConversationState]):
     """
-    WHEN: the human said something other than a quit phrase, and it has not been interpreted yet
-    THEN: recognize the intent expressed in it, using an EnumClassifier over the known HumanIntents
+    WHEN: the agent is listening, and the human said something other than a quit phrase or an acknowledgement
+    THEN: recognize the intent expressed in it, using an EnumClassifier over the known HumanIntents, and push it onto
+          the intent stack
     """
 
     TASK_DESC = (
@@ -101,392 +201,247 @@ class RecognizeIntent(Operator[ConversationState]):
         self._intent_classifier = EnumClassifier(HumanIntent, task_desc=self.TASK_DESC)
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to a new non-empty utterance that is not a quit phrase"""
+        """applies to a new non-empty utterance that is not a quit phrase or an acknowledgement, while the agent is
+        listening"""
         utterance: Utterance = io.i.interaction
         return (
-            state.human_utterance is None
+            state.listening
             and utterance.phrase is not None
             and QUIT_PATTERN.search(utterance.phrase) is None
+            and not is_acknowledgement(utterance.phrase)
         )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """stores the utterance and its recognized intent (None if no known intent matched)"""
+        """stores the utterance and its recognized intent (None if no known intent matched), stops listening, and
+        pushes the intent onto the stack"""
         utterance: Utterance = io.i.interaction
         assert utterance.phrase is not None
+        state.listening = False
         state.human_utterance = utterance
-        state.human_intent, _confidence = self._intent_classifier(utterance.phrase, DEFAULT_LLM, num_trials=1)
-
-class ReadPriceRequest(Operator[ConversationState]):
-    """
-    WHEN: the human asked for a price estimate, and the request has not been read yet
-    THEN: run the ExtractAndSetCurrent and ExtractAndSetGoal sub-processes on the request, so any where-from and
-          where-to it mentions ("from seattle to denver") update the planner; say nothing yet
-    """
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up both sub-processes once; they are restarted for every request"""
-        super().__init__(name, **kwargs)
-        self._extract_and_set_current = ExtractAndSetCurrent()
-        self._extract_and_set_goal = ExtractAndSetGoal()
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies once per price request, before it is answered"""
-        return state.human_intent is HumanIntent.GET_PRICE_ESTIMATE and not state.price_request_read
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """sets the planner's current facts and goal from the request where it mentions them, keeping what the planner
-        already has where it does not; the sub-processes' replies are not said"""
-        assert state.human_utterance is not None
-        self._extract_and_set_current.reinit()
-        self._extract_and_set_current(location=state.human_utterance, reasoner=state.reasoner, planner=state.planner)
-        self._extract_and_set_goal.reinit()
-        self._extract_and_set_goal(outcome=state.human_utterance, reasoner=state.reasoner, planner=state.planner)
-        state.price_request_read = True
-
-
-class ReactToEstimateCostIntent(Operator[ConversationState]):
-    """
-    WHEN: the human asked for a price estimate, the request has been read, and the planner knows both where the
-          package is and where it should go
-    THEN: plan the delivery with the planner, reply with a description of the plan and its cost, and get ready for
-          the next utterance
-    """
-
-    LTASK_DESC = "a logistics support agent is telling a human how it would deliver a package, and that it costs {cost} in total. Describe the plan as a list with step number, step action, and step cost. End with a final estimate as a dollar value"
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to a read price request when the planner's current facts and goal are both set"""
-        return (
-            state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
-            and state.price_request_read
-            and state.planner.current is not None
-            and state.planner.goal is not None
+        state.human_intent, _confidence = self._intent_classifier(
+            in_context(state.asked, utterance.phrase), DEFAULT_LLM, num_trials=1
         )
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """plans from the planner's current facts toward its goal, replies with a natural language description of the
-        plan and its cost, and clears the utterance; says so when no plan reaches the goal"""
-        try:
-            plan, cost = state.planner.plan()
-        except RuntimeError:
-            reply = "Sorry, I could not find a way to deliver that with the vehicles we have."
-        else:
-            action_sq = [action for action in plan]
-            reply = describe_facts(action_sq, self.LTASK_DESC.format(cost=cost), DEFAULT_LLM)
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
-        state.price_request_read = False
+        if state.human_intent is not None:
+            state.push(state.human_intent)
 
 
-class AskWhereThePackageIs(Operator[ConversationState]):
-    """
-    WHEN: the human asked for a price estimate, the request has been read, and the planner still does not know where
-          the package is
-    THEN: ask the human where the package is now, and get ready for the next utterance
-    """
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to a read price request when the planner's current facts are not set"""
-        return (
-            state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
-            and state.price_request_read
-            and state.planner.current is None
-        )
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """asks where the package is, and clears the utterance"""
-        io.o.interaction(Utterance(phrase="Where is the package now? Tell me, and then ask me for the estimate again."))
-        state.human_utterance = None
-        state.human_intent = None
-        state.price_request_read = False
-
-
-class AskWhereThePackageGoes(Operator[ConversationState]):
-    """
-    WHEN: the human asked for a price estimate, the request has been read, and the planner knows where the package is
-          but not where it should go
-    THEN: ask the human where the package should go, and get ready for the next utterance
-    """
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to a read price request when the planner's current facts are set but its goal is not; where the
-        package is gets asked first"""
-        return (
-            state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
-            and state.price_request_read
-            and state.planner.current is not None
-            and state.planner.goal is None
-        )
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """asks where the package should go, and clears the utterance"""
-        io.o.interaction(Utterance(phrase="Where should the package go? Tell me, and then ask me for the estimate again."))
-        state.human_utterance = None
-        state.human_intent = None
-        state.price_request_read = False
-
-
-class ReactToDesiredOutcomeIntent(Operator[ConversationState]):
-    """
-    WHEN: the human said what outcome they want
-    THEN: hand the outcome to the ExtractAndSetGoal sub-process, which turns it into the planner's goal and words the
-          reply; say the reply, and get ready for the next utterance
-    """
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the ExtractAndSetGoal sub-process once; it is restarted for every outcome"""
-        super().__init__(name, **kwargs)
-        self._extract_and_set_goal = ExtractAndSetGoal()
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is a desired outcome"""
-        return state.human_intent is HumanIntent.STATE_DESIRED_OUTCOME
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """runs the sub-process on the outcome, says its reply, and clears the utterance; asks again when the
-        sub-process fails, for example when the language model returns something unusable"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        self._extract_and_set_goal.reinit()
-        result = self._extract_and_set_goal(
-            outcome=state.human_utterance, reasoner=state.reasoner, planner=state.planner
-        )
-        reply = result.reply if result is not None and result.reply is not None else ASK_AGAIN
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
-
-
-class ReactToCurrentLocationIntent(Operator[ConversationState]):
-    """
-    WHEN: the human said where a package is right now
-    THEN: hand the utterance to the ExtractAndSetCurrent sub-process, which turns it into the planner's current facts
-          and words the reply; say the reply, and get ready for the next utterance
-    """
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the ExtractAndSetCurrent sub-process once; it is restarted for every utterance"""
-        super().__init__(name, **kwargs)
-        self._extract_and_set_current = ExtractAndSetCurrent()
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is stating where a package is"""
-        return state.human_intent is HumanIntent.STATE_CURRENT_LOCATION
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """runs the sub-process on the utterance, says its reply, and clears the utterance; asks where the package
-        is when the sub-process fails"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        self._extract_and_set_current.reinit()
-        result = self._extract_and_set_current(
-            location=state.human_utterance, reasoner=state.reasoner, planner=state.planner
-        )
-        reply = result.reply if result is not None and result.reply is not None else ASK_WHERE
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
-
-
-class ReactToAskAboutEntitiesIntent(Operator[ConversationState]):
-    """
-    WHEN: the human asked what things the carrier has, such as its trucks, airplanes, or the gas price
-    THEN: work out which kinds of things they asked about, look them up in the world graph with the reasoner,
-          describe them to the human, and get ready for the next utterance
-    """
-
-    QUERY_DESC = "a human is asking a logistics support agent what things it has, such as trucks, airplanes, or costs"
-    ANSWER_DESC = "a logistics support agent is answering a human who asked: {question}. Describe these things briefly, using their display names."
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the query populator once, so its prompt is reused for every utterance"""
-        super().__init__(name, **kwargs)
-        self._query_populator = ModelPopulator(EntityQuery, task_desc=self.QUERY_DESC)
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is a question about entities"""
-        return state.human_intent is HumanIntent.ASK_ABOUT_ENTITIES
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """extracts the kinds asked about, finds the matching entities, describes them, and clears the utterance;
-        says so when it cannot tell what was asked about or has nothing of that kind"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        question = state.human_utterance.phrase
-        query = self._query_populator(question, DEFAULT_LLM)
-        entities = list({e.name: e for kind in query.kinds for e in state.reasoner.find_entities(kind.entity_type)}.values())
-        if not query.kinds:
-            reply = "Sorry, I did not catch what you are asking about. I can tell you about our offices, airports, packages, trucks, airplanes, gas price, and labor costs."
-        elif not entities:
-            reply = "We do not have any of those right now."
-        else:
-            reply = describe_facts(entities, self.ANSWER_DESC.format(question=question), DEFAULT_LLM)
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
-
-
-class ReactToAskCurrentStateIntent(Operator[ConversationState]):
-    """
-    WHEN: the human asked where something currently is, or what is currently at a place
-    THEN: work out which package, vehicle, or place they asked about, find the matching At relations with the
-          reasoner, describe them to the human, and get ready for the next utterance
-    """
-
-    QUERY_DESC = (
-        "a human is asking a logistics support agent where packages or vehicles currently are, "
-        "or what is currently at an office, airport, or inside a vehicle"
-    )
-    ANSWER_DESC = "a logistics support agent is answering a human who asked: {question}. Each fact says that entity1 is currently at entity2. Answer briefly, using display names."
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the query populator once, so its prompt is reused for every utterance"""
-        super().__init__(name, **kwargs)
-        self._query_populator = ModelPopulator(StateQuery, task_desc=self.QUERY_DESC)
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is a question about the current state"""
-        return state.human_intent is HumanIntent.ASK_CURRENT_STATE
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """extracts the names asked about, finds the matching At relations, describes them, and clears the
-        utterance; says so when it cannot tell what was asked about or finds nothing"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        question = state.human_utterance.phrase
-        query = self._query_populator(question, DEFAULT_LLM, *known_entities(state.reasoner.world))
-        if query.entity1 is None and query.entity2 is None:
-            reply = "Sorry, I did not catch which package, vehicle, or place you are asking about."
-        else:
-            facts = state.reasoner.find_relations(At, query.entity1, query.entity2)
-            if facts:
-                reply = describe_facts(facts, self.ANSWER_DESC.format(question=question), DEFAULT_LLM)
-            else:
-                reply = "Nothing matches that right now."
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
-
-
-def _label(entity: Entity) -> str:
-    """how to refer to an entity in a reply: its display name, or its name with spaces"""
-    return getattr(entity, "display_name", entity.name.replace("_", " "))
-
-
-class ReactToAddEntityIntent(Operator[ConversationState]):
-    """
-    WHEN: the human wants to add a new package, truck, or airplane
-    THEN: work out what kind of thing it is and where it is, fill in its details from the utterance, add it to the
-          world graph with the reasoner, confirm it, and get ready for the next utterance
-    """
-
-    ADDABLE = (EntityKind.PACKAGE, EntityKind.TRUCK, EntityKind.AIRPLANE)
-    NEW_DESC = "a human is asking a logistics support agent to add a new package, truck, or airplane, at some place"
-    DETAILS_DESC = "a human is asking a logistics support agent to add a new {kind}; fill in its details from what the human said"
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the new-entity populator once; detail populators are made per kind on first use"""
-        super().__init__(name, **kwargs)
-        self._new_populator = ModelPopulator(NewEntity, task_desc=self.NEW_DESC)
-        self._details_populators: dict[EntityKind, ModelPopulator[Any]] = {}
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is adding an entity"""
-        return state.human_intent is HumanIntent.ADD_ENTITY
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """adds the new entity under a fresh name, placed where the human said, and confirms it; says so when the
-        kind cannot be added, the place is missing or unknown, or the details do not fit"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        phrase = state.human_utterance.phrase
-        new = self._new_populator(phrase, DEFAULT_LLM, *known_entities(state.reasoner.world))
-        if new.kind not in self.ADDABLE:
-            reply = "Sorry, I can only add packages, trucks, and airplanes."
-        elif new.location is None:
-            reply = f"Where is the new {new.kind.value}? Please tell me again, including the office, airport, or vehicle it is at."
-        else:
-            populator = self._details_populators.setdefault(
-                new.kind, ModelPopulator(new.kind.entity_type, task_desc=self.DETAILS_DESC.format(kind=new.kind.value))
-            )
-            try:
-                entity = populator(phrase, DEFAULT_LLM).model_copy(update={"name": state.reasoner.fresh_name(new.kind.value)})
-                state.reasoner.add_entity(entity, new.location)
-            except (UnexpectedModelBehavior, ValidationError):
-                fields = ", ".join(f for f in new.kind.entity_type.model_fields if f != "name")
-                reply = f"Sorry, I could not add that {new.kind.value}. Please tell me its {fields}, and where it is."
-            except KeyError:
-                reply = f"Sorry, I do not know of a place called {new.location}."
-            else:
-                reply = f"Added the {_label(entity)} ({new.kind.value}) at the {_label(state.reasoner.find_entity(new.location))}."
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
-
-
-class ReactToUpdateEntityIntent(Operator[ConversationState]):
-    """
-    WHEN: the human wants to change something that already exists, such as the gas price
-    THEN: work out which entity it is, fill in its new values from the utterance and its current values, update it
-          in the world graph with the reasoner, confirm what changed, and get ready for the next utterance
-    """
-
-    CHANGE_DESC = "a human is asking a logistics support agent to change something it has, such as the gas price, a labor cost, or a package"
-    DETAILS_DESC = (
-        "a human is asking a logistics support agent to change a {kind}; its current values are given as extra "
-        "information. Keep every value the human did not ask to change"
-    )
-
-    def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the change populator once; detail populators are made per entity type on first use"""
-        super().__init__(name, **kwargs)
-        self._change_populator = ModelPopulator(EntityChange, task_desc=self.CHANGE_DESC)
-        self._details_populators: dict[type[Entity], ModelPopulator[Any]] = {}
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the recognized intent of the current utterance is updating an entity"""
-        return state.human_intent is HumanIntent.UPDATE_ENTITY
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """updates the entity the human named and confirms the new values; says so when it cannot tell which entity,
-        or nothing changed"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        phrase = state.human_utterance.phrase
-        change = self._change_populator(phrase, DEFAULT_LLM, *known_entities(state.reasoner.world))
-        current = state.reasoner.find_entity(change.entity) if change.entity is not None else None
-        if current is None:
-            reply = "Sorry, I did not catch what you want to change."
-        else:
-            entity_type = type(current)
-            populator = self._details_populators.setdefault(
-                entity_type, ModelPopulator(entity_type, task_desc=self.DETAILS_DESC.format(kind=entity_type.__name__))
-            )
-            try:
-                updated = populator(phrase, DEFAULT_LLM, f"current values: {current.model_dump_json()}")
-                updated = updated.model_copy(update={"name": current.name})
-                state.reasoner.update_entity(updated)
-            except (UnexpectedModelBehavior, ValidationError):
-                reply = f"Sorry, I could not work out the new values for the {_label(current)}."
-            else:
-                old, new = dict(current.custom_fields), dict(updated.custom_fields)
-                changes = [f"{field} is now {value}" for field, value in new.items() if old.get(field) != value]
-                if changes:
-                    reply = f"Updated the {_label(current)}: {', '.join(changes)}."
-                else:
-                    reply = f"The {_label(current)} already has those values; nothing changed."
-        io.o.interaction(Utterance(phrase=reply))
-        state.human_utterance = None
-        state.human_intent = None
+def in_context(asked: str | None, phrase: str) -> str:
+    """the phrase as the intent classifier should see it: after the agent asked a question, a short answer such as
+    "denver" is classified together with that question"""
+    if asked is None:
+        return phrase
+    return f'the agent asked: "{asked}" and the human answered: "{phrase}"'
 
 
 class RespondUnknown(Operator[ConversationState]):
     """
-    WHEN: the human's utterance has been interpreted, and it matches none of the known intents
-    THEN: tell the human the cogent is not designed to respond to that, and get ready for the next utterance
+    WHEN: the human's utterance matches none of the known intents
+    THEN: note that the cogent is not designed to respond to that, and leave the intent stack as it is
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
         """applies when the current utterance was interpreted but no known intent was recognized"""
-        return state.human_utterance is not None and state.human_intent is None
+        return state.not_understood_any()
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """replies that the cogent cannot respond, and clears the utterance"""
-        io.o.interaction(Utterance(phrase="Sorry, I am not designed to respond to that."))
-        state.human_utterance = None
-        state.human_intent = None
+        """notes that the cogent cannot respond, and forgets the utterance"""
+        state.partial_responses.append("Sorry, I am not designed to respond to that.")
+        state.handled()
+
+
+# === small talk
+
+
+class ReactToGreetingIntent(Operator[ConversationState]):
+    """
+    WHEN: the human said hello, thanked the agent, or made small talk
+    THEN: note a friendly reply, and pop the intent
+    """
+
+    REPLY = "Hello! I am happy to help with your deliveries."
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to an utterance that is a greeting or small talk"""
+        return state.understood(HumanIntent.GREETING)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """notes the reply, and forgets the utterance"""
+        state.partial_responses.append(self.REPLY)
+        state.pop(HumanIntent.GREETING)
+        state.handled()
+
+
+class ReactToAskCapabilitiesIntent(Operator[ConversationState]):
+    """
+    WHEN: the human asked what the agent can do
+    THEN: note what the agent can help with, and pop the intent
+    """
+
+    REPLY = (
+        "I can estimate what a delivery costs, from where a shipment is picked up to where it is dropped off."
+    )
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to an utterance asking what the agent can do"""
+        return state.understood(HumanIntent.ASK_CAPABILITIES)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """notes what the agent can do, and forgets the utterance"""
+        state.partial_responses.append(self.REPLY)
+        state.pop(HumanIntent.ASK_CAPABILITIES)
+        state.handled()
+
+
+# === taking shipping requests
+
+
+class ReactToShippingRequestIntent(Operator[ConversationState]):
+    """
+    WHEN: the human described a delivery they want
+    THEN: hand the utterance to the ExtractShippingRequest sub-process; take the shipping request once the sub-process
+          has populated its origin, destination, and shipment, and confirm it; pop the intent
+    """
+
+    NOT_UNDERSTOOD = "Sorry, I did not understand the delivery you described."
+
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        """sets up the ExtractShippingRequest sub-process once; it is restarted for every utterance"""
+        super().__init__(name, **kwargs)
+        self._extract_shipping_request = ExtractShippingRequest()
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to an utterance describing a delivery"""
+        return state.understood(HumanIntent.SHIPPING_REQUEST)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """runs a fresh sub-process with the human's utterance and the reasoner, which its operators read from io.a;
+        takes the shipping request when the sub-process populated all of it and notes a confirmation, and otherwise
+        notes that the delivery was not understood; forgets the utterance"""
+        assert state.human_utterance is not None and state.human_utterance.phrase is not None
+        sub_process = self._extract_shipping_request
+        sub_process.reinit()
+        result = sub_process(utterance=state.human_utterance, reasoner=state.reasoner)
+        if result is not None and result.origin and result.destination and result.shipment:
+            state.shipping_request = request = ShippingRequest(
+                origin=result.origin, destination=result.destination, shipment=result.shipment
+            )
+            state.partial_responses.append(confirmation(request))
+        else:
+            state.partial_responses.append(self.NOT_UNDERSTOOD)
+        state.pop(HumanIntent.SHIPPING_REQUEST)
+        state.handled()
+
+
+def confirmation(request: ShippingRequest) -> str:
+    """what the agent says back once it has the whole shipping request"""
+    assert request.origin is not None and request.destination is not None and request.shipment is not None
+    return (
+        f"Got it: the {request.shipment.details} ({request.shipment.weight:,g} lb) from "
+        f"{request.origin.city.display_name} to {request.destination.city.display_name}. "
+        "Ask me what it costs whenever you are ready."
+    )
+
+
+# === estimating prices
+
+
+class AskForShippingRequest(Operator[ConversationState]):
+    """
+    WHEN: the human asked what a delivery costs, but has not described the delivery yet
+    THEN: note that the agent needs the delivery first, and pop the intent
+    """
+
+    REPLY = (
+        "Tell me about the delivery first: what you are shipping and how much it weighs, and the cities it goes from "
+        "and to."
+    )
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to an utterance asking for a price while there is no shipping request"""
+        return state.understood(HumanIntent.ESTIMATE_PRICE) and state.shipping_request is None
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """notes what the agent needs, and forgets the utterance"""
+        state.partial_responses.append(self.REPLY)
+        state.pop(HumanIntent.ESTIMATE_PRICE)
+        state.handled()
+
+
+class ReactToEstimatePriceIntent(Operator[ConversationState]):
+    """
+    WHEN: the human asked what a delivery costs
+    THEN: plan the delivery in the shipping request, from its origin to its destination, and record the plan and its
+          price; the intent stays on the stack until the plan has been described
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies to an utterance asking for a price"""
+        return state.understood(HumanIntent.ESTIMATE_PRICE) and state.shipping_request is not None
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """puts the shipping request's locations and shipment in the world graph, plans moving the shipment from the
+        origin to the destination, and takes them out again; records the plan and its cost as the price, or None for
+        both when no delivery could be planned; forgets the utterance"""
+        request, planner = state.shipping_request, state.planner
+        assert request is not None
+        planner.setup(request.origin, request.destination, request.shipment)
+        planner.set_current([At(entity1=request.shipment, entity2=request.origin)])
+        planner.set_goal([At(entity1=request.shipment, entity2=request.destination)])
+        try:
+            state.plan, state.price = planner.plan()
+        except RuntimeError:
+            state.plan, state.price = None, None
+        finally:
+            planner.clear()
+        state.handled()
+
+
+class DescribePlan(Operator[ConversationState]):
+    """
+    WHEN: the agent is working on the human's question about what a delivery costs, and has planned the delivery
+    THEN: note the price, and a description of the plan's steps written by describe_facts; or note that no delivery
+          could be planned; pop the intent
+    """
+
+    TASK_DESC = (
+        "a logistics support agent tells a human how their shipment would be delivered;"
+        "describe the steps as a list in the order they happen, naming vehicles, places, and what each step costs"
+    )
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies between utterances, with the price question on top of the stack"""
+        return state.in_focus(HumanIntent.ESTIMATE_PRICE)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """notes what delivering the shipping request costs, which the agent states itself, and how the shipment
+        would be delivered, which the language model describes from the plan's actions"""
+        request = state.shipping_request
+        assert request is not None and request.shipment is not None
+        delivery = (
+            f"the {request.shipment.details} from {request.origin.city.display_name} to "
+            f"{request.destination.city.display_name}"
+        )
+        if state.plan is None or state.price is None:
+            state.partial_responses.append(f"Sorry, I could not find a way to deliver {delivery}.")
+        else:
+            steps = describe_facts(state.plan, self.TASK_DESC, DEFAULT_LLM)
+            state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}. {steps}")
+        state.pop(HumanIntent.ESTIMATE_PRICE)
+
+
+# === ending the turn
+
+
+class Reply(Operator[ConversationState]):
+    """
+    WHEN: the utterance has been handled and the intent stack is empty, so there is nothing left to do or ask
+    THEN: end the turn by saying the partial responses
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies between utterances once the stack is empty"""
+        return not state.listening and state.human_utterance is None and not state.intent_stack
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """says the partial responses"""
+        state.say(io)

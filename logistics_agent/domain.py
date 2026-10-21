@@ -1,49 +1,43 @@
 from cognition import Entity, BinaryRelation
-from enum import StrEnum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-class City(StrEnum):
-    """cities in the logistics network; each city has one office and one airport"""
+class City(Entity):
+    """city in the logistics network; each city has one terminal and one airport, and truck routes connect cities"""
+    display_name: str = Field(description="name of the city")
 
-    SEATTLE = "seattle"
-    SAN_FRANCISCO = "san_francisco"
-    BOSTON = "boston"
-    DENVER = "denver"
-    DETROIT = "detroit"
+class Location(Entity):
+    """base type for any place in a city where shipments and vehicles can be: a terminal or an airport"""
+    city: City = Field(description="city the location is in")
 
+class Terminal(Location):
+    """terminal location in a city, where shipments start and end their journeys
 
-class Office(Entity):
-    """office location in a city, where packages start and end their journeys
-
-    trucks can drive between an office and the airport in the same city,
-    and between offices in different cities
+    trucks can drive between a terminal and the airport in the same city,
+    and between terminals in different cities
     """
-    display_name: str = Field(description="name of the office as customers know it")
-    city: City
-    address: str = Field(description="street address of the office")
+    display_name: str = Field(description="name of the terminal as customers know it")
 
-class Airport(Entity):
+class Airport(Location):
     """airport location in a city, the only place airplanes can be
 
-    trucks connect an airport to the office in the same city;
+    trucks connect an airport to the terminal in the same city;
     airplanes fly between airports connected by an air route
     """
     display_name: str = Field(description="full name of the airport")
-    city: City
 
-class Package(Entity):
+class Shipment(Entity):
     """shipment to be moved through the network
 
-    a package is either at a location (office or airport) or inside a vehicle,
+    a shipment is either at a location (terminal or airport) or inside a vehicle,
     and can only travel by being loaded into a vehicle
     """
-    display_name: str = Field(description="short description of what is being shipped")
-    weight: float = Field(description="weight of the package, in pounds")
+    details: str = Field(description="what is shipped, such as 'pallet of office chairs'")
+    weight: float = Field(description="weight of the shipment, in pounds")
 
 class Vehicle(Entity):
-    """base type for anything that can carry packages
+    """base type for anything that can carry shipments
 
-    a vehicle is always at a location (office or airport); packages inside it
+    a vehicle is always at a location (terminal or airport); shipments inside it
     move along with it
     """
     display_name: str = Field(description="name the carrier uses for the vehicle")
@@ -53,8 +47,8 @@ class Vehicle(Entity):
 class Truck(Vehicle):
     """vehicle that travels by road
 
-    moves between an office and the airport in the same city,
-    or between offices in different cities
+    moves between a terminal and the airport in the same city,
+    or between terminals in different cities
     """
     license_plate: str
 
@@ -66,12 +60,12 @@ class Airplane(Vehicle):
     tail_number: str = Field(description="registration number painted on the airplane")
 
 class TruckRoute(BinaryRelation):
-    """road connection between offices in two different cities
+    """road connection between two different cities, driven between their terminals
 
-    declared once per pair of offices; distance is the length of the drive
+    declared once per pair of cities and can be driven in either direction; distance is the length of the drive
     """
-    entity1: Office = Field(frozen=True)
-    entity2: Office = Field(frozen=True)
+    entity1: City = Field(frozen=True)
+    entity2: City = Field(frozen=True)
     distance: int = Field(default=0, description="length of the drive, in miles")
 
 class AirRoute(BinaryRelation):
@@ -85,13 +79,13 @@ class AirRoute(BinaryRelation):
     price: int = Field(description="cost of flying the route, in US dollars")
 
 class At(BinaryRelation):
-    """where a package or vehicle currently is
+    """where a shipment or vehicle currently is
 
-    entity1 is the package or vehicle; entity2 is a location (office or airport),
-    or a vehicle when a package has been loaded into it
+    entity1 is the shipment or vehicle; entity2 is a location (terminal or airport),
+    or a vehicle when a shipment has been loaded into it
     """
-    entity1: Package | Vehicle = Field(frozen=True)
-    entity2: Office | Airport | Vehicle = Field(frozen=True)
+    entity1: Shipment | Vehicle = Field(frozen=True)
+    entity2: Location | Vehicle = Field(frozen=True)
 
 class GasPrice(Entity):
     """what fuel costs the carrier for every mile a truck drives"""
@@ -104,26 +98,51 @@ class LongDistanceFactor(Entity):
     per_mile: float
 
 class LaborCost(Entity):
-    """what the carrier pays its crew in a city to handle packages, such as loading and unloading"""
-    by_weight: float = Field(description="labor cost per pound of package handled, in US dollars")
+    """what the carrier pays its crew in a city to handle shipments, such as loading and unloading"""
+    by_weight: float = Field(description="labor cost per pound of shipment handled, in US dollars")
     city: City
 
 
+class ShippingQuery(BaseModel):
+    """what a human wants to know the price of: moving a shipment from one terminal to another"""
+    origin: Terminal = Field(description="terminal the shipment is sent from")
+    destination: Terminal = Field(description="terminal the shipment is delivered to, another terminal than the origin")
+    shipment: Shipment = Field(description="shipment being sent")
+
+    @model_validator(mode="after")
+    def destination_is_another_terminal(self) -> "ShippingQuery":
+        """a shipment cannot be sent to the terminal it starts at"""
+        if self.destination == self.origin:
+            raise ValueError(f"the destination must be another terminal than the origin, {self.origin.name}")
+        return self
+
+
+class ShippingRequest(BaseModel):
+    """a request to move a shipment from one location to another; a part is None until it is known"""
+    origin: Location | None = Field(default=None, description="location the shipment is sent from")
+    destination: Location | None = Field(default=None, description="location the shipment is delivered to")
+    shipment: Shipment | None = Field(default=None, description="shipment being sent")
+
+    def missing(self) -> list[str]:
+        """the names of the parts not known yet, in the order origin, destination, shipment"""
+        return [part for part in ("origin", "destination", "shipment") if getattr(self, part) is None]
+
+
 class Action(BaseModel):
-    """an action the agent takes to deliver a package; cost is the price of carrying it out"""
+    """an action the agent takes to deliver a shipment; cost is the price of carrying it out"""
     cost: float = Field(description="price of carrying out the action, in US dollars")
 
 class DriveLocalAction(Action):
-    """drive a truck between an office and the airport in the same city"""
+    """drive a truck between a terminal and the airport in the same city"""
     truck: Truck
-    from_location: Office | Airport
-    to_location: Office | Airport
+    from_location: Location
+    to_location: Location
 
 class DriveLongDistanceAction(Action):
-    """drive a truck between offices in different cities"""
+    """drive a truck between locations in different cities, each city with a terminal"""
     truck: Truck
-    from_location: Office
-    to_location: Office
+    from_location: Location
+    to_location: Location
 
 class FlyAction(Action):
     """fly an airplane between two airports connected by an air route"""
@@ -132,13 +151,13 @@ class FlyAction(Action):
     to_location: Airport
 
 class LoadAction(Action):
-    """load a package into a vehicle"""
-    package: Package
+    """load a shipment into a vehicle"""
+    shipment: Shipment
     vehicle: Truck | Airplane
-    location: Office | Airport
+    location: Location
 
 class UnloadAction(Action):
-    """unload a package from a vehicle"""
-    package: Package
+    """unload a shipment from a vehicle"""
+    shipment: Shipment
     vehicle: Truck | Airplane
-    location: Office | Airport
+    location: Location

@@ -4,7 +4,7 @@ from typing import Any
 
 from cognition import BinaryRelation, Entity, WorldGraph
 
-from logistics_agent.domain import At, GasPrice, LaborCost, Package, Truck, Airplane, Office, Airport, AirRoute, TruckRoute, City
+from logistics_agent.domain import At, GasPrice, LaborCost, Truck, Airplane, Terminal, Airport, AirRoute, TruckRoute, City
 
 
 def _normalize(name: str) -> str:
@@ -22,8 +22,9 @@ class Reasoner:
     """maintains the world graph the cogent reasons about
 
     the world graph is built in two parts:
-    static configuration: what does not change while the cogent runs: offices, airports, vehicles, the package,
-        truck and air routes, the gas price and labor costs (configure_world_graph)
+    static configuration: what does not change while the cogent runs: terminals, airports, vehicles, truck and air
+        routes, the gas price and labor costs (configure_world_graph); there are no shipments until the human adds
+        them
     initial state: where each vehicle starts, which changes as deliveries happen (set_initial_state)
     """
 
@@ -33,23 +34,25 @@ class Reasoner:
 
     @staticmethod
     def configure_world_graph() -> WorldGraph:
-        """builds the static parts of the world: an office and airport in each city, truck and air routes between
-        every pair of cities, two trucks, one airplane, a package, the gas price, and the labor cost in each city"""
-        office_seattle = Office(name="office_seattle", display_name="Seattle Office", city=City.SEATTLE,
-                                address="2400 Airport Way S, Seattle, WA")
-        sea = Airport(name="SEA", display_name="Seattle-Tacoma International Airport", city=City.SEATTLE)
-        office_san_francisco = Office(name="office_san_francisco", display_name="San Francisco Office", city=City.SAN_FRANCISCO,
-                                      address="1550 Evans Ave, San Francisco, CA")
-        sfo = Airport(name="SFO", display_name="San Francisco International Airport", city=City.SAN_FRANCISCO)
-        office_boston = Office(name="office_boston", display_name="Boston Office", city=City.BOSTON,
-                               address="100 Terminal St, Boston, MA")
-        bos = Airport(name="BOS", display_name="Boston Logan International Airport", city=City.BOSTON)
-        office_denver = Office(name="office_denver", display_name="Denver Office", city=City.DENVER,
-                               address="4800 Dahlia St, Denver, CO")
-        den = Airport(name="DEN", display_name="Denver International Airport", city=City.DENVER)
-        office_detroit = Office(name="office_detroit", display_name="Detroit Office", city=City.DETROIT,
-                                address="9000 Michigan Ave, Detroit, MI")
-        dtw = Airport(name="DTW", display_name="Detroit Metropolitan Wayne County Airport", city=City.DETROIT)
+        """builds the static parts of the world: five cities, a terminal and airport in each city, truck routes
+        between every pair of cities and air routes between every pair of airports, two trucks, one airplane, the
+        gas price, and the labor cost in each city"""
+        seattle = City(name="seattle", display_name="Seattle")
+        san_francisco = City(name="san_francisco", display_name="San Francisco")
+        boston = City(name="boston", display_name="Boston")
+        denver = City(name="denver", display_name="Denver")
+        detroit = City(name="detroit", display_name="Detroit")
+
+        terminal_seattle = Terminal(name="terminal_seattle", display_name="Seattle Terminal", city=seattle)
+        sea = Airport(name="SEA", display_name="Seattle-Tacoma International Airport", city=seattle)
+        terminal_san_francisco = Terminal(name="terminal_san_francisco", display_name="San Francisco Terminal", city=san_francisco)
+        sfo = Airport(name="SFO", display_name="San Francisco International Airport", city=san_francisco)
+        terminal_boston = Terminal(name="terminal_boston", display_name="Boston Terminal", city=boston)
+        bos = Airport(name="BOS", display_name="Boston Logan International Airport", city=boston)
+        terminal_denver = Terminal(name="terminal_denver", display_name="Denver Terminal", city=denver)
+        den = Airport(name="DEN", display_name="Denver International Airport", city=denver)
+        terminal_detroit = Terminal(name="terminal_detroit", display_name="Detroit Terminal", city=detroit)
+        dtw = Airport(name="DTW", display_name="Detroit Metropolitan Wayne County Airport", city=detroit)
         truck1 = Truck(name="truck1", display_name="Big Bertha", model="Freightliner M2 106 26ft box truck",
                        max_payload=10000, license_plate="C12345A")
         truck2 = Truck(name="truck2", display_name="Little Rocket", model="Isuzu NPR-HD 16ft box truck",
@@ -68,31 +71,33 @@ class Reasoner:
         airroute9 = AirRoute(entity1=bos, entity2=dtw, price=489)
         airroute10 = AirRoute(entity1=den, entity2=dtw, price=239)
 
-        truckroute1 = TruckRoute(entity1=office_seattle, entity2=office_san_francisco, distance=800)
-        truckroute2 = TruckRoute(entity1=office_seattle, entity2=office_denver, distance=1300)
-        truckroute3 = TruckRoute(entity1=office_seattle, entity2=office_boston, distance=3000)
-        truckroute4 = TruckRoute(entity1=office_san_francisco, entity2=office_denver, distance=1250)
-        truckroute5 = TruckRoute(entity1=office_san_francisco, entity2=office_boston, distance=3125)
-        truckroute6 = TruckRoute(entity1=office_denver, entity2=office_boston, distance=1970)
-        truckroute7 = TruckRoute(entity1=office_seattle, entity2=office_detroit, distance=2300)
-        truckroute8 = TruckRoute(entity1=office_san_francisco, entity2=office_detroit, distance=2400)
-        truckroute9 = TruckRoute(entity1=office_boston, entity2=office_detroit, distance=725)
-        truckroute10 = TruckRoute(entity1=office_denver, entity2=office_detroit, distance=1250)
-
-        package1 = Package(name="package1", display_name="crate of machine parts", weight=1000)
+        truckroute1 = TruckRoute(entity1=seattle, entity2=san_francisco, distance=800)
+        truckroute2 = TruckRoute(entity1=seattle, entity2=denver, distance=1300)
+        truckroute3 = TruckRoute(entity1=seattle, entity2=boston, distance=3000)
+        truckroute4 = TruckRoute(entity1=san_francisco, entity2=denver, distance=1250)
+        truckroute5 = TruckRoute(entity1=san_francisco, entity2=boston, distance=3125)
+        truckroute6 = TruckRoute(entity1=denver, entity2=boston, distance=1970)
+        truckroute7 = TruckRoute(entity1=seattle, entity2=detroit, distance=2300)
+        truckroute8 = TruckRoute(entity1=san_francisco, entity2=detroit, distance=2400)
+        truckroute9 = TruckRoute(entity1=boston, entity2=detroit, distance=725)
+        truckroute10 = TruckRoute(entity1=denver, entity2=detroit, distance=1250)
 
         world = WorldGraph()
-        world.add_entity(office_seattle)
+        world.add_entity(seattle)
+        world.add_entity(san_francisco)
+        world.add_entity(boston)
+        world.add_entity(denver)
+        world.add_entity(detroit)
+        world.add_entity(terminal_seattle)
         world.add_entity(sea)
-        world.add_entity(office_san_francisco)
+        world.add_entity(terminal_san_francisco)
         world.add_entity(sfo)
-        world.add_entity(office_boston)
+        world.add_entity(terminal_boston)
         world.add_entity(bos)
-        world.add_entity(office_denver)
+        world.add_entity(terminal_denver)
         world.add_entity(den)
-        world.add_entity(office_detroit)
+        world.add_entity(terminal_detroit)
         world.add_entity(dtw)
-        world.add_entity(package1)
         world.add_entity(truck1)
         world.add_entity(truck2)
         world.add_entity(air1)
@@ -120,23 +125,23 @@ class Reasoner:
         world.add_entity(GasPrice(name="gas_price", per_mile=0.8))
 
         # handling crews cost more where wages are higher
-        world.add_entity(LaborCost(name="labor_cost_seattle", city=City.SEATTLE, by_weight=0.06))
-        world.add_entity(LaborCost(name="labor_cost_san_francisco", city=City.SAN_FRANCISCO, by_weight=0.08))
-        world.add_entity(LaborCost(name="labor_cost_boston", city=City.BOSTON, by_weight=0.07))
-        world.add_entity(LaborCost(name="labor_cost_denver", city=City.DENVER, by_weight=0.05))
-        world.add_entity(LaborCost(name="labor_cost_detroit", city=City.DETROIT, by_weight=0.04))
+        world.add_entity(LaborCost(name="labor_cost_seattle", city=seattle, by_weight=0.06))
+        world.add_entity(LaborCost(name="labor_cost_san_francisco", city=san_francisco, by_weight=0.08))
+        world.add_entity(LaborCost(name="labor_cost_boston", city=boston, by_weight=0.07))
+        world.add_entity(LaborCost(name="labor_cost_denver", city=denver, by_weight=0.05))
+        world.add_entity(LaborCost(name="labor_cost_detroit", city=detroit, by_weight=0.04))
 
         return world
 
     def set_initial_state(self) -> None:
-        """places each vehicle where it starts: truck1 and air1 at SEA, and truck2 at SFO; where a package is comes
-        from the human, through the planner's current facts"""
+        """places each vehicle where it starts: truck1 at the Seattle terminal, truck2 at the San Francisco
+        terminal, and air1 at SEA; where a shipment is comes from the human, through the planner's current facts"""
 
         def entity(name: str) -> Any:
             return self.world.get_entity(name, linked=False)
 
-        self.world.add_relation(At(entity1=entity("truck1"), entity2=entity("SEA")))
-        self.world.add_relation(At(entity1=entity("truck2"), entity2=entity("SFO")))
+        self.world.add_relation(At(entity1=entity("truck1"), entity2=entity("terminal_seattle")))
+        self.world.add_relation(At(entity1=entity("truck2"), entity2=entity("terminal_san_francisco")))
         self.world.add_relation(At(entity1=entity("air1"), entity2=entity("SEA")))
 
     def find_entities[E: Entity](self, entity_type: type[E]) -> list[E]:
@@ -162,7 +167,7 @@ class Reasoner:
         return None
 
     def fresh_name(self, prefix: str) -> str:
-        """an entity name not yet used in the world graph, made of the prefix and a number, such as package2"""
+        """an entity name not yet used in the world graph, made of the prefix and a number, such as shipment2"""
         taken = {e.name for e in self.world.snapshot.by(Entity)}
         n = 1
         while f"{prefix}{n}" in taken:

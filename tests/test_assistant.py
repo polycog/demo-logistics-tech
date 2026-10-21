@@ -1,195 +1,65 @@
 """offline tests of the logistics support agent's conversation
 
-a fake EnumClassifier, a fake ModelPopulator and a fake describe_facts stand in for the LLM (intents are keyed by phrase,
-populated models by model type and phrase, and facts are described by how many there are), and the human's lines are
-fed to input() from a script, so the whole perceive-decide-act loop runs deterministically with no
-API key. When the script runs out, input() raises EOFError, which the agent treats as quitting.
+a fake EnumClassifier stands in for the LLM (intents are keyed by phrase), and a fake describe_facts names the actions
+it is given; the human's lines are fed to input() from a script, so the whole perceive-decide-act loop runs deterministically with no API key. When the script runs out,
+input() raises EOFError, which the agent treats as quitting.
 """
 
+import re
 from collections import deque
-from types import SimpleNamespace
 
 import pytest
-from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from logistics_agent import assistant, conductor, extract_and_set_current, extract_and_set_goal
-from logistics_agent.communicator import (
-    AtFact,
-    CurrentLocation,
-    DesiredOutcome,
-    EntityChange,
-    EntityKind,
-    EntityQuery,
-    HumanIntent,
-    NewEntity,
-    StateQuery,
-    Utterance,
-    known_entities,
-)
+from logistics_agent import assistant, conductor, extract_shipping_request
+from logistics_agent.communicator import HumanIntent, Utterance
 from logistics_agent.conductor import (
+    Acknowledge,
+    AskForShippingRequest,
     INTRODUCTION,
-    AskWhereThePackageGoes,
-    AskWhereThePackageIs,
     ConversationState,
+    DescribePlan,
     Introduce,
-    ReactToAddEntityIntent,
-    ReactToAskAboutEntitiesIntent,
-    ReactToAskCurrentStateIntent,
-    ReactToCurrentLocationIntent,
-    ReactToDesiredOutcomeIntent,
-    ReactToEstimateCostIntent,
-    ReactToUpdateEntityIntent,
-    ReadPriceRequest,
+    ReactToAskCapabilitiesIntent,
+    ReactToEstimatePriceIntent,
+    ReactToGreetingIntent,
+    ReactToShippingRequestIntent,
     RecognizeIntent,
+    Reply,
     RespondUnknown,
     SayGoodbye,
 )
-from logistics_agent.domain import At, DriveLongDistanceAction, GasPrice, Package, Truck, UnloadAction
-from logistics_agent.extract_and_set_current import (
-    ASK_WHERE,
-    AskWhere,
-    CurrentState,
-    ExtractAndSetCurrent,
-    ExtractCurrentLocation,
-    ResolveCurrent,
-    SetCurrent,
+from logistics_agent.domain import At, City, Location, Shipment, ShippingRequest, UnloadAction
+from logistics_agent.extract_shipping_request import (
+    ExtractDestination,
+    ExtractOrigin,
+    ExtractShippingRequest,
+    ShippingRequestState,
 )
-from logistics_agent.extract_and_set_goal import (
-    ASK_AGAIN,
-    AskAgain,
-    ExtractAndSetGoal,
-    ExtractOutcome,
-    GoalState,
-    ResolveGoal,
-    SetGoal,
-)
-from logistics_agent.planner import LogisticsPlanner
-from logistics_agent.reasoner import Reasoner
 
-PRICE = "how much to ship a package from seattle to san francisco?"
-PRICE_AGAIN = "how much would that cost?"
 GIBBERISH = "what is the capital of france?"
 HELLO = "hello there"
 CAPABILITIES = "what can you do?"
-
-OUTCOME = "I want my crate of machine parts to end up in denver"
-TWO_OUTCOMES = "the crate should go to the san francisco office, and the pelican should end at SFO"
-VAGUE_OUTCOME = "I want my crate delivered somewhere nice"
-UNKNOWN_OUTCOME = "send the crate to narnia"
-IMPOSSIBLE_OUTCOME = "put the denver office inside big bertha"
-GARBLED_OUTCOME = "crate... uh... the place with the mountains"
-
-CRATE_IN_SEATTLE = "the crate is at the seattle office"
-CRATE_SOMEWHERE = "the crate is somewhere around"
-CRATE_IN_NARNIA = "the crate is in narnia"
-GARBLED_LOCATION = "the crate... it's, you know, there"
-
-ASK_TRUCKS = "which trucks do we have?"
-ASK_VEHICLES_AND_TRUCKS = "which vehicles and trucks do we have?"
-ASK_AIRPLANES = "which airplanes do we have?"
-ASK_UNICORNS = "which unicorns do we have?"
-
-WHERE_BERTHA = "where is big bertha currently?"
-WHAT_AT_SEA = "what is at the seattle airport?"
-WHAT_IN_PELICAN = "what is in the pelican?"
-WHERE_BOOKS = "where is the box of books?"
-WHERE_VAGUE = "where is it?"
-
-ADD_BOOKS = "add a 200 lb package of books at the boston office"
-ADD_OFFICE = "add an office in chicago"
-ADD_SOMETHING = "add something"
-ADD_NOWHERE = "add a 200 lb package of books"
-ADD_NARNIA = "add a 200 lb package of books in narnia"
-ADD_VAGUE = "add a package at the boston office"
-ADD_TRUCK_AT_GAS_PRICE = "add a truck at the gas price"
-
-UPDATE_GAS = "set the gas price to 0.95 per mile"
-UPDATE_GAS_SAME = "set the gas price to 0.8 per mile"
-UPDATE_CRATE = "the crate now weighs 500 lb"
-UPDATE_BERTHA = "big bertha can now carry 12000 lb"
-UPDATE_SOMETHING = "change something"
-UPDATE_UNICORN = "make the unicorn faster"
-UPDATE_VAGUE = "change the gas price"
-
-BOOKS = Package(name="made_up_by_the_llm", display_name="box of books", weight=200)
+PRICE = "how much will it cost?"
+SHIPPING = "I need to ship a box of books, 200 pounds, from Seattle to Denver"
+BOOKS_CONFIRMATION = (
+    "Got it: the box of books (200 lb) from Seattle to Denver. Ask me what it costs whenever you are ready."
+)
+BOOKS_PRICE_REPLY = (
+    "Delivering the box of books from Seattle to Denver costs $1,112.00. "
+    "DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
+)
+PRICE_REPLY = (
+    "Delivering the pallet of office chairs from Seattle to San Francisco "
+    "costs $802.00. DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
+)
+QUESTION = "Where is the shipment now?"
 
 INTENTS = {
-    PRICE: HumanIntent.GET_PRICE_ESTIMATE,
-    PRICE_AGAIN: HumanIntent.GET_PRICE_ESTIMATE,
-    **dict.fromkeys((CRATE_IN_SEATTLE, CRATE_SOMEWHERE, CRATE_IN_NARNIA, GARBLED_LOCATION),
-                    HumanIntent.STATE_CURRENT_LOCATION),
     GIBBERISH: None,
     HELLO: HumanIntent.GREETING,
     CAPABILITIES: HumanIntent.ASK_CAPABILITIES,
-    **dict.fromkeys((OUTCOME, TWO_OUTCOMES, VAGUE_OUTCOME, UNKNOWN_OUTCOME, IMPOSSIBLE_OUTCOME, GARBLED_OUTCOME),
-                    HumanIntent.STATE_DESIRED_OUTCOME),
-    **dict.fromkeys((ASK_TRUCKS, ASK_VEHICLES_AND_TRUCKS, ASK_AIRPLANES, ASK_UNICORNS), HumanIntent.ASK_ABOUT_ENTITIES),
-    **dict.fromkeys((WHERE_BERTHA, WHAT_AT_SEA, WHAT_IN_PELICAN, WHERE_BOOKS, WHERE_VAGUE), HumanIntent.ASK_CURRENT_STATE),
-    **dict.fromkeys((ADD_BOOKS, ADD_OFFICE, ADD_SOMETHING, ADD_NOWHERE, ADD_NARNIA, ADD_VAGUE, ADD_TRUCK_AT_GAS_PRICE),
-                    HumanIntent.ADD_ENTITY),
-    **dict.fromkeys((UPDATE_GAS, UPDATE_GAS_SAME, UPDATE_CRATE, UPDATE_BERTHA, UPDATE_SOMETHING, UPDATE_UNICORN,
-                     UPDATE_VAGUE),
-                    HumanIntent.UPDATE_ENTITY),
-}
-
-# what each populator returns, keyed by (model type, phrase); an exception is raised instead of returned
-POPULATED = {
-    (CurrentLocation, PRICE): CurrentLocation(facts=[AtFact(entity1="package1", entity2="office_seattle")]),
-    (DesiredOutcome, PRICE): DesiredOutcome(facts=[AtFact(entity1="package1", entity2="office_san_francisco")]),
-    (CurrentLocation, PRICE_AGAIN): CurrentLocation(facts=[]),
-    (DesiredOutcome, PRICE_AGAIN): DesiredOutcome(facts=[]),
-
-    (CurrentLocation, CRATE_IN_SEATTLE): CurrentLocation(facts=[AtFact(entity1="package1", entity2="office_seattle")]),
-    (CurrentLocation, CRATE_SOMEWHERE): CurrentLocation(facts=[]),
-    (CurrentLocation, CRATE_IN_NARNIA): CurrentLocation(facts=[AtFact(entity1="package1", entity2="narnia")]),
-    (CurrentLocation, GARBLED_LOCATION): UnexpectedModelBehavior("could not fill in the location"),
-
-    (DesiredOutcome, OUTCOME): DesiredOutcome(facts=[AtFact(entity1="package1", entity2="office_denver")]),
-    (DesiredOutcome, TWO_OUTCOMES): DesiredOutcome(facts=[
-        AtFact(entity1="package1", entity2="office_san_francisco"), AtFact(entity1="air1", entity2="SFO"),
-    ]),
-    (DesiredOutcome, VAGUE_OUTCOME): DesiredOutcome(facts=[]),
-    (DesiredOutcome, UNKNOWN_OUTCOME): DesiredOutcome(facts=[AtFact(entity1="package1", entity2="narnia")]),
-    (DesiredOutcome, IMPOSSIBLE_OUTCOME): DesiredOutcome(facts=[AtFact(entity1="office_denver", entity2="truck1")]),
-    (DesiredOutcome, GARBLED_OUTCOME): UnexpectedModelBehavior("could not fill in the outcome"),
-
-    (EntityQuery, ASK_TRUCKS): EntityQuery(kinds=[EntityKind.TRUCK]),
-    (EntityQuery, ASK_VEHICLES_AND_TRUCKS): EntityQuery(kinds=[EntityKind.VEHICLE, EntityKind.TRUCK]),
-    (EntityQuery, ASK_AIRPLANES): EntityQuery(kinds=[EntityKind.AIRPLANE]),
-    (EntityQuery, ASK_UNICORNS): EntityQuery(kinds=[]),
-
-    (StateQuery, WHERE_BERTHA): StateQuery(entity1="Big Bertha", entity2=None),
-    (StateQuery, WHAT_AT_SEA): StateQuery(entity1=None, entity2="SEA"),
-    (StateQuery, WHAT_IN_PELICAN): StateQuery(entity1=None, entity2="air1"),
-    (StateQuery, WHERE_BOOKS): StateQuery(entity1="box of books", entity2=None),
-    (StateQuery, WHERE_VAGUE): StateQuery(entity1=None, entity2=None),
-
-    (NewEntity, ADD_BOOKS): NewEntity(kind=EntityKind.PACKAGE, location="office_boston"),
-    (Package, ADD_BOOKS): BOOKS,
-    (NewEntity, ADD_OFFICE): NewEntity(kind=EntityKind.OFFICE, location=None),
-    (NewEntity, ADD_SOMETHING): NewEntity(kind=None, location=None),
-    (NewEntity, ADD_NOWHERE): NewEntity(kind=EntityKind.PACKAGE, location=None),
-    (NewEntity, ADD_NARNIA): NewEntity(kind=EntityKind.PACKAGE, location="narnia"),
-    (Package, ADD_NARNIA): BOOKS,
-    (NewEntity, ADD_VAGUE): NewEntity(kind=EntityKind.PACKAGE, location="office_boston"),
-    (Package, ADD_VAGUE): UnexpectedModelBehavior("no weight given"),
-    (NewEntity, ADD_TRUCK_AT_GAS_PRICE): NewEntity(kind=EntityKind.TRUCK, location="gas_price"),
-    (Truck, ADD_TRUCK_AT_GAS_PRICE): Truck(name="t", display_name="Tiny", model="Ford Transit", max_payload=3000,
-                                           license_plate="X1"),
-
-    (EntityChange, UPDATE_GAS): EntityChange(entity="gas_price"),
-    (GasPrice, UPDATE_GAS): GasPrice(name="made_up_by_the_llm", per_mile=0.95),
-    (EntityChange, UPDATE_GAS_SAME): EntityChange(entity="gas_price"),
-    (GasPrice, UPDATE_GAS_SAME): GasPrice(name="gas_price", per_mile=0.8),
-    (EntityChange, UPDATE_CRATE): EntityChange(entity="crate of machine parts"),
-    (Package, UPDATE_CRATE): Package(name="package1", display_name="crate of machine parts", weight=500),
-    (EntityChange, UPDATE_BERTHA): EntityChange(entity="Big Bertha"),
-    (Truck, UPDATE_BERTHA): Truck(name="truck1", display_name="Big Bertha", model="Freightliner M2 106 26ft box truck",
-                                  max_payload=12000, license_plate="C12345A"),
-    (EntityChange, UPDATE_SOMETHING): EntityChange(entity=None),
-    (EntityChange, UPDATE_UNICORN): EntityChange(entity="unicorn"),
-    (EntityChange, UPDATE_VAGUE): EntityChange(entity="gas_price"),
-    (GasPrice, UPDATE_VAGUE): UnexpectedModelBehavior("no new value given"),
+    PRICE: HumanIntent.ESTIMATE_PRICE,
+    SHIPPING: HumanIntent.SHIPPING_REQUEST,
 }
 
 
@@ -200,46 +70,49 @@ class FakeEnumClassifier:
         self.enum_type, self.task_desc = enum_type, task_desc
         self.calls: list[tuple] = []
 
-    def __call__(self, phrase: str, llm, **kwargs) -> tuple[HumanIntent | None, float]:
-        self.calls.append((phrase, llm, kwargs))
-        return INTENTS[phrase], 1.0
+    def __call__(self, text: str, llm, **kwargs) -> tuple[HumanIntent | None, float]:
+        """classifies the phrase, or, for an answer given together with the agent's question, the answer"""
+        self.calls.append((text, llm, kwargs))
+        answer = re.search(r'the human answered: "(.*)"$', text)
+        return INTENTS[answer.group(1) if answer else text], 1.0
+
+
+class FakeDescribeFacts:
+    """stands in for describe_facts: names the types of the facts, in order; records how it was called"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def __call__(self, instances, task_desc: str | None, llm, **kwargs) -> str:
+        facts = tuple(instances)
+        self.calls.append((facts, task_desc, llm))
+        return ", ".join(type(fact).__name__ for fact in facts)
 
 
 class FakeModelPopulator:
-    """stands in for ModelPopulator: canned models, keyed by model type and phrase; records how it was built and
-    called"""
+    """stands in for ModelPopulator in the ExtractShippingRequest sub-process: whatever the human said, the delivery
+    is a box of books, 200 pounds, from Seattle to Denver"""
+
+    CITIES = {ExtractOrigin.TASK_DESC: "Seattle", ExtractDestination.TASK_DESC: "Denver"}
 
     def __init__(self, model_type, task_desc: str) -> None:
         self.model_type, self.task_desc = model_type, task_desc
-        self.calls: list[tuple] = []
 
-    def __call__(self, phrase: str, llm, *extra: str, **kwargs):
-        self.calls.append((phrase, llm, extra))
-        result = POPULATED[self.model_type, phrase]
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
-DESCRIBED: list[tuple[list, str]] = []
-
-
-def fake_describe_facts(facts, task_desc, _llm) -> str:
-    """describes facts by how many there are and the task description; records every set of facts and task
-    description it was given"""
-    DESCRIBED.append((list(facts), task_desc))
-    return f"described {len(DESCRIBED[-1][0])} facts: {task_desc}"
+    def __call__(self, utterance: str, llm, *extra: str, **kwargs):
+        if self.model_type is Shipment:
+            return Shipment(name="books", details="box of books", weight=200)
+        return self.model_type.model_validate({"city": self.CITIES[self.task_desc]})
 
 
 @pytest.fixture(autouse=True)
 def fake_language(monkeypatch):
-    """replaces the LLM-backed EnumClassifier, ModelPopulator and describe_facts used by the operators"""
-    DESCRIBED.clear()
+    """replaces the LLM-backed EnumClassifier and describe_facts used by the operators; returns the fake
+    describe_facts"""
     monkeypatch.setattr(conductor, "EnumClassifier", FakeEnumClassifier)
-    monkeypatch.setattr(conductor, "ModelPopulator", FakeModelPopulator)
-    monkeypatch.setattr(extract_and_set_goal, "ModelPopulator", FakeModelPopulator)
-    monkeypatch.setattr(extract_and_set_current, "ModelPopulator", FakeModelPopulator)
+    fake_describe_facts = FakeDescribeFacts()
     monkeypatch.setattr(conductor, "describe_facts", fake_describe_facts)
+    monkeypatch.setattr(extract_shipping_request, "ModelPopulator", FakeModelPopulator)
+    return fake_describe_facts
 
 
 @pytest.fixture
@@ -283,22 +156,10 @@ def test_unknown_intent_gets_a_polite_refusal(chat):
     assert chat(GIBBERISH, "quit") == [INTRODUCTION, "Sorry, I am not designed to respond to that.", "Goodbye!"]
 
 
-def test_price_estimate_describes_the_plan_and_cost(chat):
-    _, reply, goodbye = chat(PRICE, "quit")
-    [(actions, task_desc)] = DESCRIBED
-    assert len(actions) == 4
-    [drive] = [a for a in actions if isinstance(a, DriveLongDistanceAction)]
-    assert (drive.from_location.name, drive.to_location.name) == ("office_seattle", "office_san_francisco")
-    assert "costs 830.0 in total" in task_desc
-    assert reply == f"described 4 facts: {task_desc}"
-    assert goodbye == "Goodbye!"
-
-
 def test_keeps_answering_after_each_reply(chat):
-    replies = chat(GIBBERISH, PRICE, GIBBERISH, PRICE, "quit")
+    replies = chat(GIBBERISH, HELLO, GIBBERISH, HELLO, "quit")
     assert replies[1] == replies[3] == "Sorry, I am not designed to respond to that."
-    assert replies[2] == replies[4]
-    assert "costs 830.0 in total" in replies[2]
+    assert replies[2] == replies[4] == ReactToGreetingIntent.REPLY
     assert replies[-1] == "Goodbye!"
 
 
@@ -308,70 +169,29 @@ def test_empty_lines_are_ignored(chat):
     ]
 
 
-def test_price_request_naming_where_from_and_where_to_is_answered_in_one_turn(chat):
-    replies = chat(PRICE, "quit")
-    assert "costs 830.0 in total" in replies[1]
-
-
-def test_price_request_asks_for_where_from_then_where_to_then_estimates(chat):
-    """seattle office to denver office: truck to the office 50, load 60, drive 1300 miles 1040, unload 50"""
-    replies = chat(PRICE_AGAIN, CRATE_IN_SEATTLE, PRICE_AGAIN, OUTCOME, PRICE_AGAIN, "quit")
-    assert replies[1] == "Where is the package now? Tell me, and then ask me for the estimate again."
-    assert replies[2] == ("Got it: the crate of machine parts is at the Seattle Office. "
-                          "Ask me for a price estimate whenever you are ready.")
-    assert replies[3] == "Where should the package go? Tell me, and then ask me for the estimate again."
-    assert replies[4] == ("Got it: the crate of machine parts at the Denver Office. "
-                          "Ask me for a price estimate whenever you are ready.")
-    assert "costs 1200.0 in total" in replies[5]
-
-
-def test_price_request_without_a_destination_does_not_plan(chat):
-    replies = chat(CRATE_IN_SEATTLE, PRICE_AGAIN, "quit")
-    assert replies[2] == "Where should the package go? Tell me, and then ask me for the estimate again."
-    assert not DESCRIBED
-
-
-def test_desired_outcome_is_confirmed_and_used_by_the_estimate(chat):
-    _, _, confirmation, _, _ = chat(CRATE_IN_SEATTLE, OUTCOME, PRICE_AGAIN, "quit")
-    assert confirmation == ("Got it: the crate of machine parts at the Denver Office. "
-                            "Ask me for a price estimate whenever you are ready.")
-    [(actions, _)] = DESCRIBED
-    unload = actions[-1]
-    assert isinstance(unload, UnloadAction)
-    assert (unload.package.name, unload.location.name) == ("package1", "office_denver")
-
-
-def test_vague_outcome_keeps_the_goal_the_estimate_uses(chat):
-    chat(PRICE, VAGUE_OUTCOME, PRICE_AGAIN, "quit")
-    [(_, _), (actions, _)] = DESCRIBED
-    assert actions[-1].location.name == "office_san_francisco"
-
-
-def test_a_follow_up_price_request_keeps_where_from_and_where_to(chat):
-    replies = chat(PRICE, PRICE_AGAIN, "quit")
-    assert replies[1] == replies[2]
-
-
-def test_an_added_package_can_be_asked_about(chat):
-    replies = chat(ADD_BOOKS, WHERE_BOOKS, "quit")
-    assert replies[1] == "Added the box of books (package) at the Boston Office."
-    [(facts, _)] = DESCRIBED
-    assert [(f.entity1.name, f.entity2.name) for f in facts] == [("package2", "office_boston")]
-
-
-def test_an_updated_gas_price_changes_the_estimate(chat):
-    """at 0.95 per mile the 800 mile drive costs 760, so driving (950 in total) loses to flying (879)"""
-    replies = chat(PRICE, UPDATE_GAS, PRICE, "quit")
-    assert "costs 830.0 in total" in replies[1]
-    assert replies[2] == "Updated the gas price: per_mile is now 0.95."
-    assert "costs 879.0 in total" in replies[3]
-
-
-@pytest.mark.xfail(strict=True, reason="no operator answers greetings or capability questions yet")
-@pytest.mark.parametrize("phrase", [HELLO, CAPABILITIES])
-def test_known_intents_without_an_operator_still_get_a_reply(chat, phrase):
+@pytest.mark.parametrize("phrase, reply", [
+    (HELLO, ReactToGreetingIntent.REPLY), (CAPABILITIES, ReactToAskCapabilitiesIntent.REPLY),
+])
+def test_greetings_and_capability_questions_are_answered_and_the_conversation_goes_on(chat, phrase, reply):
     replies = chat(phrase, GIBBERISH, "quit")
+    assert replies[1] == reply
     assert replies[2] == "Sorry, I am not designed to respond to that."
+
+
+def test_asking_for_a_price_before_describing_the_delivery_asks_for_the_delivery(chat):
+    assert chat(PRICE, "quit") == [INTRODUCTION, AskForShippingRequest.REPLY, "Goodbye!"]
+
+
+def test_a_described_delivery_is_confirmed_and_then_priced(chat):
+    assert chat(SHIPPING, PRICE, "quit") == [INTRODUCTION, BOOKS_CONFIRMATION, BOOKS_PRICE_REPLY, "Goodbye!"]
+
+
+def test_ok_gets_no_reply_and_thanks_is_answered(chat):
+    assert chat("ok", "thanks!", "quit") == [INTRODUCTION, "You're welcome.", "Goodbye!"]
+
+
+def test_every_intent_has_an_operator_that_handles_it():
+    assert set().union(*HANDLERS.values()) - {None} == set(HumanIntent)
 
 
 # === single operators
@@ -396,62 +216,45 @@ class RecordingIO:
         self.i, self.o = I, O
 
 
-def heard(phrase: str) -> ConversationState:
-    """a conversation state in which the phrase has been heard and its intent recognized"""
-    return ConversationState(human_utterance=Utterance(phrase), human_intent=INTENTS[phrase])
+def heard(phrase: str, state: ConversationState | None = None) -> ConversationState:
+    """a conversation state in which the phrase has been heard, its intent recognized and pushed, as RecognizeIntent
+    leaves it"""
+    state = state or ConversationState()
+    state.listening = False
+    state.human_utterance, state.human_intent = Utterance(phrase), INTENTS[phrase]
+    if state.human_intent is not None:
+        state.push(state.human_intent)
+    return state
+
+
+def working_on(*stack: HumanIntent, state: ConversationState | None = None) -> ConversationState:
+    """a conversation state between utterances, with the intents on the stack (the last on top)"""
+    state = state or ConversationState()
+    state.listening = False
+    state.intent_stack = list(stack)
+    return state
 
 
 def react(op_type: type, phrase: str, state: ConversationState | None = None) -> tuple[ConversationState, str, object]:
-    """has a fresh operator of the type react to the phrase; checks that it applies and that it clears the utterance,
-    and returns the state, the one reply, and the operator"""
-    state = state or heard(phrase)
-    state.human_utterance, state.human_intent = Utterance(phrase), INTENTS[phrase]
+    """has a fresh operator of the type handle the phrase; checks that it applies, that it handles the utterance, and
+    that it notes one thing instead of speaking; returns the state, the note, and the operator"""
+    state = heard(phrase, state)
     op, io = op_type("op"), RecordingIO()
     assert op.can_perform(state, io)
+    responses_before = len(state.partial_responses)
     op.perform(state, io)
     assert state.human_utterance is None and state.human_intent is None
-    [reply] = io.said
-    return state, reply, op
+    assert not io.said, "operators that handle an utterance note what to say, and the turn says it at the end"
+    [note] = state.partial_responses[responses_before:]
+    return state, note, op
 
 
-def current_of(state: ConversationState) -> list[tuple[str, str]] | None:
-    if state.planner.current is None:
-        return None
-    return [(fact.entity1.name, fact.entity2.name) for fact in state.planner.current]
+GREETING = HumanIntent.GREETING
+CAPABILITY = HumanIntent.ASK_CAPABILITIES
+PRICE_INTENT = HumanIntent.ESTIMATE_PRICE
 
 
-def package_in_seattle(state: ConversationState) -> ConversationState:
-    """sets the planner's current facts to package1 at the Seattle office"""
-    find = state.reasoner.find_entity
-    state.planner.set_current([At(entity1=find("package1"), entity2=find("office_seattle"))])
-    return state
-
-
-def to_san_francisco(state: ConversationState) -> ConversationState:
-    """sets the planner's goal to package1 at the San Francisco office"""
-    find = state.reasoner.find_entity
-    state.planner.set_goal([At(entity1=find("package1"), entity2=find("office_san_francisco"))])
-    return state
-
-
-def read_price_request(phrase: str) -> ConversationState:
-    """a conversation state in which the price request has been heard and read, for the package going from Seattle
-    to San Francisco"""
-    state = to_san_francisco(package_in_seattle(heard(phrase)))
-    state.price_request_read = True
-    return state
-
-
-def goal_of(state: ConversationState) -> list[tuple[str, str]]:
-    return [(fact.entity1.name, fact.entity2.name) for fact in state.planner.goal]
-
-
-def location_of(state: ConversationState, name: str) -> str:
-    [at] = state.reasoner.find_relations(At, name)
-    return at.entity2.name
-
-
-# --- conversation state
+# --- conversation state and the intent stack
 
 
 def test_planner_plans_over_the_reasoners_world_graph():
@@ -459,9 +262,71 @@ def test_planner_plans_over_the_reasoners_world_graph():
     assert state.planner.world is state.reasoner.world
 
 
-def test_planner_starts_with_no_goal_and_no_current_facts():
+def test_conversation_starts_listening_with_an_empty_stack():
     state = ConversationState()
+    assert state.listening and state.intent_stack == [] and state.top is None and state.partial_responses == []
     assert state.planner.goal is None and state.planner.current is None
+
+
+def test_push_puts_an_intent_on_top_and_moves_it_there_if_it_is_already_on_the_stack():
+    state = ConversationState()
+    for intent in (GREETING, CAPABILITY):
+        state.push(intent)
+    assert state.intent_stack == [GREETING, CAPABILITY] and state.top is CAPABILITY
+    state.push(GREETING)
+    assert state.intent_stack == [CAPABILITY, GREETING]
+
+
+def test_pop_removes_only_the_intent_on_top():
+    state = working_on(GREETING, CAPABILITY)
+    with pytest.raises(AssertionError):
+        state.pop(GREETING)
+    state.pop(CAPABILITY)
+    assert state.intent_stack == [GREETING]
+
+
+def test_planner_can_plan_once_it_has_current_facts_and_a_goal():
+    state = ConversationState()
+    find = state.reasoner.find_entity
+    assert not state.planner.has_current() and not state.planner.has_goal() and not state.planner.can_plan()
+    state.planner.set_current([At(entity1=find("shipment1"), entity2=find("terminal_seattle"))])
+    assert state.planner.has_current() and not state.planner.has_goal() and not state.planner.can_plan()
+    state.planner.set_goal([At(entity1=find("shipment1"), entity2=find("terminal_san_francisco"))])
+    assert state.planner.has_goal() and state.planner.can_plan()
+
+
+# --- exactly one operator applies at every step
+
+
+ALL_OPERATORS = [
+    Introduce, SayGoodbye, Acknowledge, RecognizeIntent, RespondUnknown,
+    ReactToGreetingIntent, ReactToAskCapabilitiesIntent, ReactToShippingRequestIntent,
+    AskForShippingRequest, ReactToEstimatePriceIntent, DescribePlan, Reply,
+]
+
+
+def introduced(state: ConversationState) -> ConversationState:
+    state.introduced = True
+    return state
+
+
+@pytest.mark.parametrize("make_state, phrase, expected", [
+    (ConversationState, None, Introduce),
+    (lambda: introduced(ConversationState()), "ok bye", SayGoodbye),
+    (lambda: introduced(ConversationState()), "thanks!", Acknowledge),
+    (lambda: introduced(ConversationState()), HELLO, RecognizeIntent),
+    (lambda: introduced(heard(GIBBERISH)), GIBBERISH, RespondUnknown),
+    (lambda: introduced(heard(HELLO)), HELLO, ReactToGreetingIntent),
+    (lambda: introduced(heard(CAPABILITIES)), CAPABILITIES, ReactToAskCapabilitiesIntent),
+    (lambda: introduced(heard(SHIPPING)), SHIPPING, ReactToShippingRequestIntent),
+    (lambda: introduced(heard(PRICE)), PRICE, AskForShippingRequest),
+    (lambda: introduced(heard(PRICE, with_chairs(ConversationState()))), PRICE, ReactToEstimatePriceIntent),
+    (lambda: introduced(working_on(PRICE_INTENT)), PRICE, DescribePlan),
+    (lambda: introduced(working_on()), HELLO, Reply),
+])
+def test_exactly_one_operator_applies_at_each_step(make_state, phrase, expected):
+    state, io = make_state(), RecordingIO(phrase)
+    assert [op_type for op_type in ALL_OPERATORS if op_type("op").can_perform(state, io)] == [expected]
 
 
 # --- introduce and say goodbye
@@ -472,7 +337,7 @@ def test_introduce_applies_only_once():
     op = Introduce("introduce")
     assert op.can_perform(state, io)
     op.perform(state, io)
-    assert io.said == [INTRODUCTION] and state.introduced
+    assert io.said == [INTRODUCTION] and state.introduced and state.listening
     assert not op.can_perform(state, io)
 
 
@@ -489,16 +354,63 @@ def test_say_goodbye_ends_the_conversation():
     assert io.said == ["Goodbye!"] and state.done
 
 
+# --- acknowledge
+
+
+@pytest.mark.parametrize("phrase", ["thanks", "Thank you so much!", "thx"])
+def test_acknowledge_answers_thanks_and_keeps_listening(phrase):
+    state, io = introduced(ConversationState()), RecordingIO(phrase)
+    op = Acknowledge("acknowledge")
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert io.said == ["You're welcome."] and state.listening and state.asked is None and state.intent_stack == []
+
+
+@pytest.mark.parametrize("phrase", ["ok", "OK.", "got it", "sounds good!"])
+def test_acknowledge_says_nothing_to_ok_and_keeps_the_question_pending(phrase):
+    state, io = introduced(ConversationState()), RecordingIO(phrase)
+    state.asked = QUESTION
+    op = Acknowledge("acknowledge")
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert io.said == [] and state.listening and state.asked == QUESTION
+
+
+def test_acknowledge_asks_again_the_question_the_agent_last_asked_after_thanks():
+    state, io = introduced(ConversationState()), RecordingIO("thanks")
+    state.asked = QUESTION
+    Acknowledge("acknowledge").perform(state, io)
+    assert io.said == [f"You're welcome. {QUESTION}"] and state.asked == QUESTION
+
+
+@pytest.mark.parametrize("phrase", [None, "ok, ship it from seattle", "thanks for the quote", "ok bye", HELLO])
+def test_acknowledge_ignores_anything_that_says_more(phrase):
+    assert not Acknowledge("acknowledge").can_perform(ConversationState(), RecordingIO(phrase))
+
+
+def test_acknowledge_waits_until_the_agent_is_listening():
+    assert not Acknowledge("acknowledge").can_perform(working_on(), RecordingIO("thanks"))
+
+
 # --- recognize intent
 
 
-def test_recognize_intent_stores_utterance_and_intent():
-    state, io = ConversationState(), RecordingIO(PRICE)
+def test_recognize_intent_stores_the_utterance_stops_listening_and_pushes_the_intent():
+    state, io = ConversationState(), RecordingIO(HELLO)
     op = RecognizeIntent("recognize_intent")
     assert op.can_perform(state, io)
     op.perform(state, io)
-    assert state.human_utterance == Utterance(PRICE)
-    assert state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
+    assert state.human_utterance == Utterance(HELLO)
+    assert state.human_intent is GREETING
+    assert state.intent_stack == [GREETING] and not state.listening
+    assert not op.can_perform(state, io)
+
+
+def test_recognize_intent_pushes_nothing_for_an_unknown_intent():
+    state = ConversationState()
+    RecognizeIntent("recognize_intent").perform(state, RecordingIO(GIBBERISH))
+    assert state.human_utterance == Utterance(GIBBERISH) and state.human_intent is None
+    assert state.intent_stack == []
 
 
 def test_recognize_intent_classifies_over_the_known_intents():
@@ -510,530 +422,294 @@ def test_recognize_intent_classifies_over_the_known_intents():
     assert classifier.calls == [(GIBBERISH, conductor.DEFAULT_LLM, {"num_trials": 1})]
 
 
-@pytest.mark.parametrize("phrase", [None, "quit", "ok bye now", "EXIT please"])
-def test_recognize_intent_skips_silence_and_quitting(phrase):
+def test_recognize_intent_classifies_an_answer_together_with_the_question_asked():
+    state = ConversationState()
+    state.asked = QUESTION
+    op = RecognizeIntent("recognize_intent")
+    op.perform(state, RecordingIO(HELLO))
+    [(text, _, _)] = op._intent_classifier.calls
+    assert text == f'the agent asked: "{QUESTION}" and the human answered: "{HELLO}"'
+
+
+@pytest.mark.parametrize("phrase", [None, "quit", "ok bye now", "EXIT please", "thanks", "ok"])
+def test_recognize_intent_skips_silence_quitting_and_acknowledgements(phrase):
     op = RecognizeIntent("recognize_intent")
     assert not op.can_perform(ConversationState(), RecordingIO(phrase))
 
 
-def test_recognize_intent_waits_until_the_current_utterance_is_answered():
+def test_recognize_intent_waits_until_the_agent_is_listening():
     op = RecognizeIntent("recognize_intent")
-    assert not op.can_perform(heard(PRICE), RecordingIO(GIBBERISH))
+    assert not op.can_perform(heard(HELLO), RecordingIO(GIBBERISH))
+    assert not op.can_perform(working_on(), RecordingIO(GIBBERISH))
 
 
-# --- operators apply only to their own intent
+# --- operators that handle an utterance apply only to its intent
 
 
-REACTIONS = {
-    ReadPriceRequest: HumanIntent.GET_PRICE_ESTIMATE,
-    ReactToEstimateCostIntent: HumanIntent.GET_PRICE_ESTIMATE,
-    ReactToDesiredOutcomeIntent: HumanIntent.STATE_DESIRED_OUTCOME,
-    ReactToCurrentLocationIntent: HumanIntent.STATE_CURRENT_LOCATION,
-    ReactToAskAboutEntitiesIntent: HumanIntent.ASK_ABOUT_ENTITIES,
-    ReactToAskCurrentStateIntent: HumanIntent.ASK_CURRENT_STATE,
-    ReactToAddEntityIntent: HumanIntent.ADD_ENTITY,
-    ReactToUpdateEntityIntent: HumanIntent.UPDATE_ENTITY,
+HANDLERS = {
+    ReactToGreetingIntent: {HumanIntent.GREETING},
+    ReactToAskCapabilitiesIntent: {HumanIntent.ASK_CAPABILITIES},
+    ReactToEstimatePriceIntent: {HumanIntent.ESTIMATE_PRICE},
+    AskForShippingRequest: {HumanIntent.ESTIMATE_PRICE},
+    ReactToShippingRequestIntent: {HumanIntent.SHIPPING_REQUEST},
+    RespondUnknown: {None},
 }
 
 
-@pytest.mark.parametrize("op_type", list(REACTIONS))
+@pytest.mark.parametrize("op_type", list(HANDLERS))
 @pytest.mark.parametrize("intent", [*HumanIntent, None])
-def test_each_reaction_applies_only_to_its_intent(op_type, intent):
-    """with the delivery known and the price request read (for every operator but the one that reads it), only the
-    intent decides whether an operator applies"""
-    state = to_san_francisco(package_in_seattle(ConversationState(human_utterance=Utterance(GIBBERISH),
-                                                                  human_intent=intent)))
-    state.price_request_read = op_type is not ReadPriceRequest
-    assert op_type("op").can_perform(state, RecordingIO()) == (REACTIONS[op_type] is intent)
+def test_each_handler_applies_only_to_its_intent(op_type, intent):
+    state = working_on()
+    if op_type is ReactToEstimatePriceIntent:
+        with_chairs(state)
+    state.human_utterance, state.human_intent = Utterance(GIBBERISH), intent
+    assert op_type("op").can_perform(state, RecordingIO()) == (intent in HANDLERS[op_type])
+
+
+@pytest.mark.parametrize("op_type", list(HANDLERS))
+def test_handlers_wait_for_an_utterance(op_type):
+    assert not op_type("op").can_perform(working_on(GREETING), RecordingIO())
+
+
+@pytest.mark.parametrize("op_type, phrase", [
+    (ReactToGreetingIntent, HELLO), (ReactToAskCapabilitiesIntent, CAPABILITIES),
+])
+def test_small_talk_pops_its_intent_and_leaves_the_rest_of_the_stack(op_type, phrase):
+    other = CAPABILITY if op_type is ReactToGreetingIntent else GREETING
+    state, _, _ = react(op_type, phrase, working_on(other))
+    assert state.intent_stack == [other]
 
 
 # --- respond unknown
 
 
-@pytest.mark.parametrize("intent", list(HumanIntent))
-def test_respond_unknown_ignores_known_intents(intent):
-    state = ConversationState(human_utterance=Utterance(PRICE), human_intent=intent)
-    assert not RespondUnknown("respond_unknown").can_perform(state, RecordingIO())
+def test_respond_unknown_notes_an_apology_and_leaves_the_stack():
+    state, note, _ = react(RespondUnknown, GIBBERISH, working_on(GREETING))
+    assert note == "Sorry, I am not designed to respond to that."
+    assert state.intent_stack == [GREETING]
 
 
-def test_respond_unknown_waits_for_an_utterance():
-    assert not RespondUnknown("respond_unknown").can_perform(ConversationState(), RecordingIO())
+def with_chairs(state: ConversationState) -> ConversationState:
+    """the state, with a pallet of office chairs to deliver from Seattle to San Francisco as its shipping request"""
+    find = state.reasoner.find_entity
+    state.shipping_request = ShippingRequest(
+        origin=Location(name="shipping-origin", city=find("seattle")),
+        destination=Location(name="shipping-destination", city=find("san_francisco")),
+        shipment=Shipment(name="shipment", details="pallet of office chairs", weight=800),
+    )
+    return state
 
 
-def test_respond_unknown_clears_the_utterance():
-    _, reply, _ = react(RespondUnknown, GIBBERISH)
-    assert reply == "Sorry, I am not designed to respond to that."
+# --- taking shipping requests
 
 
-# --- estimate cost
+SEATTLE = Location(name="pickup1", city=City(name="seattle", display_name="Seattle"))
+DENVER = Location(name="dropoff1", city=City(name="denver", display_name="Denver"))
+BOOKS = Shipment(name="shipment2", details="box of books", weight=200)
 
 
-def test_read_price_request_sets_where_from_and_where_to_and_says_nothing():
-    state, io = heard(PRICE), RecordingIO()
-    op = ReadPriceRequest("op")
+class FakeExtractShippingRequest:
+    """stands in for the ExtractShippingRequest sub-process: returns a canned final state, or None as if it did not
+    finish; records how often it was restarted, the output channels it was linked to, and what it was called with"""
+
+    result: ShippingRequestState | None = None
+
+    def __init__(self) -> None:
+        self.reinits = 0
+        self.outputs: dict = {}
+        self.calls: list[dict] = []
+
+    def reinit(self) -> "FakeExtractShippingRequest":
+        self.reinits += 1
+        return self
+
+    def set_output_channel(self, key: str, channel) -> "FakeExtractShippingRequest":
+        self.outputs[key] = channel
+        return self
+
+    def __call__(self, **args) -> ShippingRequestState | None:
+        self.calls.append(args)
+        return self.result
+
+
+@pytest.fixture
+def fake_extraction(monkeypatch):
+    """replaces the ExtractShippingRequest sub-process the operator sets up; returns its class, whose result the test
+    sets"""
+    FakeExtractShippingRequest.result = None
+    monkeypatch.setattr(conductor, "ExtractShippingRequest", FakeExtractShippingRequest)
+    return FakeExtractShippingRequest
+
+
+def test_shipping_request_sets_up_its_sub_process_once():
+    assert isinstance(ReactToShippingRequestIntent("op")._extract_shipping_request, ExtractShippingRequest)
+
+
+def test_shipping_request_runs_a_fresh_sub_process_with_the_humans_utterance_and_the_reasoner(fake_extraction):
+    state = heard(SHIPPING)
+    op, io = ReactToShippingRequestIntent("op"), RecordingIO(SHIPPING)
+    op.perform(state, io)
+    sub_process = op._extract_shipping_request
+    assert sub_process.reinits == 1
+    assert sub_process.calls == [{"utterance": Utterance(SHIPPING), "reasoner": state.reasoner}]
+
+
+def test_shipping_request_takes_the_shipping_request_once_all_of_it_is_populated_and_confirms_it(fake_extraction):
+    fake_extraction.result = ShippingRequestState(origin=SEATTLE, destination=DENVER, shipment=BOOKS)
+    state = heard(SHIPPING, working_on(GREETING))
+    op, io = ReactToShippingRequestIntent("op"), RecordingIO(SHIPPING)
     assert op.can_perform(state, io)
     op.perform(state, io)
-    assert current_of(state) == [("package1", "office_seattle")]
-    assert goal_of(state) == [("package1", "office_san_francisco")]
-    assert state.price_request_read and not io.said
-    assert state.human_utterance == Utterance(PRICE) and state.human_intent is HumanIntent.GET_PRICE_ESTIMATE
-    assert not op.can_perform(state, io)
+    request = state.shipping_request
+    assert (request.origin, request.destination, request.shipment) == (SEATTLE, DENVER, BOOKS)
+    assert state.partial_responses == [BOOKS_CONFIRMATION] and io.said == []
+    assert state.intent_stack == [GREETING] and state.human_utterance is None
 
 
-def test_read_price_request_keeps_what_the_request_does_not_mention():
-    state = package_in_seattle(heard(PRICE_AGAIN))
-    state.planner.set_goal([At(entity1=state.reasoner.find_entity("package1"),
-                               entity2=state.reasoner.find_entity("office_denver"))])
-    ReadPriceRequest("op").perform(state, RecordingIO())
-    assert current_of(state) == [("package1", "office_seattle")]
-    assert goal_of(state) == [("package1", "office_denver")]
+@pytest.mark.parametrize("result", [None, ShippingRequestState(origin=SEATTLE, shipment=BOOKS)])
+def test_shipping_request_keeps_the_shipping_request_and_says_so_when_not_all_of_it_is_populated(
+    fake_extraction, result
+):
+    fake_extraction.result = result
+    state = ConversationState()
+    before = state.shipping_request
+    state, note, _ = react(ReactToShippingRequestIntent, SHIPPING, state)
+    assert state.shipping_request is before and note == ReactToShippingRequestIntent.NOT_UNDERSTOOD
+    assert state.intent_stack == []
 
 
-def test_read_price_request_sets_up_its_sub_processes_once():
-    op = ReadPriceRequest("op")
-    current, goal = op._extract_and_set_current, op._extract_and_set_goal
-    assert isinstance(current, ExtractAndSetCurrent) and isinstance(goal, ExtractAndSetGoal)
-    op.perform(heard(PRICE), RecordingIO())
-    op.perform(heard(PRICE_AGAIN), RecordingIO())
-    assert op._extract_and_set_current is current and op._extract_and_set_goal is goal
+def test_a_new_delivery_replaces_the_shipping_request(fake_extraction):
+    fake_extraction.result = ShippingRequestState(origin=SEATTLE, destination=DENVER, shipment=BOOKS)
+    state, note, _ = react(ReactToShippingRequestIntent, SHIPPING, with_chairs(ConversationState()))
+    assert state.shipping_request.shipment == BOOKS and note == BOOKS_CONFIRMATION
 
 
-def test_estimate_waits_until_the_request_is_read():
-    state = read_price_request(PRICE)
-    state.price_request_read = False
-    assert not ReactToEstimateCostIntent("op").can_perform(state, RecordingIO())
+def test_a_second_delivery_is_confirmed_and_priced_in_place_of_the_first(chat):
+    assert chat(SHIPPING, PRICE, SHIPPING, PRICE, "quit") == [
+        INTRODUCTION, BOOKS_CONFIRMATION, BOOKS_PRICE_REPLY, BOOKS_CONFIRMATION, BOOKS_PRICE_REPLY, "Goodbye!",
+    ]
 
 
-def test_estimate_waits_for_the_planners_goal():
-    state = read_price_request(PRICE)
-    state.planner.goal = None
-    assert not ReactToEstimateCostIntent("op").can_perform(state, RecordingIO())
+# --- estimating prices
 
 
-def test_estimate_waits_for_the_planners_current_facts():
-    state = read_price_request(PRICE)
-    state.planner.current = None
-    assert not ReactToEstimateCostIntent("op").can_perform(state, RecordingIO())
+def test_conversation_starts_with_no_shipping_request_and_no_price():
+    state = ConversationState()
+    assert state.shipping_request is None and state.plan is None and state.price is None
 
 
-def test_estimate_plans_from_current_toward_the_goal_without_changing_them():
-    state, reply, _ = react(ReactToEstimateCostIntent, PRICE, read_price_request(PRICE))
-    [(actions, task_desc)] = DESCRIBED
-    assert actions[-1].location.name == "office_san_francisco"
-    assert reply == f"described 4 facts: {task_desc}"
-    assert goal_of(state) == [("package1", "office_san_francisco")]
-    assert current_of(state) == [("package1", "office_seattle")]
-    assert not state.price_request_read
+def test_ask_for_shipping_request_notes_what_the_agent_needs_and_pops_its_intent():
+    state, note, _ = react(AskForShippingRequest, PRICE, working_on(GREETING))
+    assert note == AskForShippingRequest.REPLY and state.intent_stack == [GREETING]
 
 
-def test_estimate_without_a_plan_says_so():
-    state = read_price_request(PRICE)
-    for vehicle in ("truck1", "truck2", "air1"):
-        state.reasoner.world.remove_node(vehicle)
-    state, reply, _ = react(ReactToEstimateCostIntent, PRICE, state)
-    assert reply == "Sorry, I could not find a way to deliver that with the vehicles we have."
-    assert not DESCRIBED and not state.price_request_read
+def test_ask_for_shipping_request_does_not_apply_once_there_is_a_shipping_request():
+    state = heard(PRICE, with_chairs(ConversationState()))
+    assert not AskForShippingRequest("op").can_perform(state, RecordingIO(PRICE))
 
 
-# --- ask where the package is
-
-
-def test_ask_where_the_package_is_applies_only_to_a_read_request_without_current_facts():
-    op, state = AskWhereThePackageIs("op"), read_price_request(PRICE)
-    assert not op.can_perform(state, RecordingIO())
-    state.planner.current = None
-    assert op.can_perform(state, RecordingIO())
-    state.price_request_read = False
-    assert not op.can_perform(state, RecordingIO())
-
-
-def test_ask_where_the_package_is_asks_and_clears_the_request():
-    state = read_price_request(PRICE)
-    state.planner.current = None
-    state, reply, _ = react(AskWhereThePackageIs, PRICE, state)
-    assert reply == "Where is the package now? Tell me, and then ask me for the estimate again."
-    assert not state.price_request_read
-
-
-# --- ask where the package goes
-
-
-def test_ask_where_the_package_goes_applies_only_once_where_it_is_is_known_and_where_it_goes_is_not():
-    op, state = AskWhereThePackageGoes("op"), read_price_request(PRICE)
-    assert not op.can_perform(state, RecordingIO())
-    state.planner.goal = None
-    assert op.can_perform(state, RecordingIO())
-    state.planner.current = None
-    assert not op.can_perform(state, RecordingIO())
-    assert AskWhereThePackageIs("op").can_perform(state, RecordingIO())
-
-
-def test_ask_where_the_package_goes_asks_and_clears_the_request():
-    state = read_price_request(PRICE)
-    state.planner.goal = None
-    state, reply, _ = react(AskWhereThePackageGoes, PRICE, state)
-    assert reply == "Where should the package go? Tell me, and then ask me for the estimate again."
-    assert not state.price_request_read
-
-
-# --- current location
-
-
-def test_current_location_sets_the_planners_current_facts():
-    state, reply, _ = react(ReactToCurrentLocationIntent, CRATE_IN_SEATTLE)
-    assert current_of(state) == [("package1", "office_seattle")]
-    assert reply == ("Got it: the crate of machine parts is at the Seattle Office. "
-                     "Ask me for a price estimate whenever you are ready.")
-
-
-@pytest.mark.parametrize("phrase", [CRATE_SOMEWHERE, CRATE_IN_NARNIA, GARBLED_LOCATION])
-def test_current_location_it_cannot_use_asks_where_and_keeps_the_current_facts(phrase):
-    state, reply, _ = react(ReactToCurrentLocationIntent, phrase, package_in_seattle(heard(phrase)))
-    assert reply == ASK_WHERE
-    assert current_of(state) == [("package1", "office_seattle")]
-
-
-def test_current_location_sets_up_its_sub_process_once():
-    op = ReactToCurrentLocationIntent("op")
-    sub_process = op._extract_and_set_current
-    assert isinstance(sub_process, ExtractAndSetCurrent)
-    op.perform(heard(CRATE_IN_SEATTLE), RecordingIO())
-    assert op._extract_and_set_current is sub_process
-
-
-# --- desired outcome
-
-
-def test_desired_outcome_sets_up_its_sub_process_once_and_restarts_it_for_every_outcome():
-    op = ReactToDesiredOutcomeIntent("op")
-    sub_process = op._extract_and_set_goal
-    assert isinstance(sub_process, ExtractAndSetGoal)
-    state = heard(OUTCOME)
-    op.perform(state, RecordingIO())
-    state.human_utterance, state.human_intent = Utterance(VAGUE_OUTCOME), INTENTS[VAGUE_OUTCOME]
-    op.perform(state, RecordingIO())
-    assert op._extract_and_set_goal is sub_process
-    assert sub_process.state.reply == ASK_AGAIN and sub_process.state.desired_outcome.facts == []
-
-
-def test_desired_outcome_the_sub_process_cannot_finish_asks_again_and_keeps_the_goal():
-    state, reply, _ = react(ReactToDesiredOutcomeIntent, GARBLED_OUTCOME, to_san_francisco(heard(GARBLED_OUTCOME)))
-    assert reply == ASK_AGAIN
-    assert goal_of(state) == [("package1", "office_san_francisco")]
-
-
-def test_desired_outcome_sets_the_planners_goal():
-    state, reply, _ = react(ReactToDesiredOutcomeIntent, OUTCOME)
-    assert goal_of(state) == [("package1", "office_denver")]
-    assert reply == ("Got it: the crate of machine parts at the Denver Office. "
-                     "Ask me for a price estimate whenever you are ready.")
-
-
-def test_desired_outcome_with_several_facts_sets_them_all():
-    state, reply, _ = react(ReactToDesiredOutcomeIntent, TWO_OUTCOMES)
-    assert goal_of(state) == [("package1", "office_san_francisco"), ("air1", "SFO")]
-    assert reply.startswith("Got it: the crate of machine parts at the San Francisco Office; "
-                            "the The Pelican at the San Francisco International Airport.")
-
-
-@pytest.mark.parametrize("phrase", [VAGUE_OUTCOME, UNKNOWN_OUTCOME, IMPOSSIBLE_OUTCOME])
-def test_desired_outcome_it_cannot_use_asks_again_and_keeps_the_goal(phrase):
-    state, reply, _ = react(ReactToDesiredOutcomeIntent, phrase, to_san_francisco(heard(phrase)))
-    assert reply == "Sorry, I did not catch where things should end up. Where should the package go?"
-    assert goal_of(state) == [("package1", "office_san_francisco")]
-
-
-# --- ask about entities
-
-
-def test_ask_about_entities_describes_the_entities_of_the_kinds_asked_about():
-    _, reply, op = react(ReactToAskAboutEntitiesIntent, ASK_TRUCKS)
-    [(entities, task_desc)] = DESCRIBED
-    assert {e.name for e in entities} == {"truck1", "truck2"}
-    assert ASK_TRUCKS in task_desc
-    assert reply == f"described 2 facts: {task_desc}"
-    assert op._query_populator.model_type is EntityQuery
-
-
-def test_ask_about_overlapping_kinds_describes_each_entity_once():
-    react(ReactToAskAboutEntitiesIntent, ASK_VEHICLES_AND_TRUCKS)
-    [(entities, _)] = DESCRIBED
-    assert sorted(e.name for e in entities) == ["air1", "truck1", "truck2"]
-
-
-def test_ask_about_entities_of_a_kind_with_none_says_so():
-    state = heard(ASK_AIRPLANES)
-    state.reasoner.world.remove_node("air1")
-    _, reply, _ = react(ReactToAskAboutEntitiesIntent, ASK_AIRPLANES, state)
-    assert reply == "We do not have any of those right now."
-    assert not DESCRIBED
-
-
-def test_ask_about_no_known_kind_lists_what_it_can_answer():
-    _, reply, _ = react(ReactToAskAboutEntitiesIntent, ASK_UNICORNS)
-    assert reply.startswith("Sorry, I did not catch what you are asking about.")
-    assert not DESCRIBED
-
-
-# --- ask current state
-
-
-def test_ask_where_something_is_describes_its_at_relation():
-    state, reply, op = react(ReactToAskCurrentStateIntent, WHERE_BERTHA)
-    [(facts, task_desc)] = DESCRIBED
-    assert [(f.entity1.name, f.entity2.name) for f in facts] == [("truck1", "SEA")]
-    assert WHERE_BERTHA in task_desc
-    assert reply == f"described 1 facts: {task_desc}"
-    assert op._query_populator.calls[0][2] == tuple(known_entities(state.reasoner.world))
-
-
-def test_ask_what_is_at_a_place_describes_everything_there():
-    react(ReactToAskCurrentStateIntent, WHAT_AT_SEA)
-    [(facts, _)] = DESCRIBED
-    assert {(f.entity1.name, f.entity2.name) for f in facts} == {("truck1", "SEA"), ("air1", "SEA")}
-
-
-def test_ask_about_an_empty_place_says_nothing_matches():
-    _, reply, _ = react(ReactToAskCurrentStateIntent, WHAT_IN_PELICAN)
-    assert reply == "Nothing matches that right now."
-    assert not DESCRIBED
-
-
-def test_ask_current_state_without_naming_anything_asks_again():
-    _, reply, _ = react(ReactToAskCurrentStateIntent, WHERE_VAGUE)
-    assert reply == "Sorry, I did not catch which package, vehicle, or place you are asking about."
-    assert not DESCRIBED
-
-
-# --- add entity
-
-
-def test_add_entity_adds_it_under_a_fresh_name_at_the_location():
-    state, reply, op = react(ReactToAddEntityIntent, ADD_BOOKS)
-    assert reply == "Added the box of books (package) at the Boston Office."
-    books = state.reasoner.find_entity("package2")
-    assert (books.display_name, books.weight) == ("box of books", 200)
-    assert location_of(state, "package2") == "office_boston"
-    assert state.reasoner.find_entity("made_up_by_the_llm") is None
-    assert op._details_populators[EntityKind.PACKAGE].model_type is Package
-
-
-def test_add_entity_reuses_the_details_populator_for_a_kind():
-    state = heard(ADD_BOOKS)
-    op, io = ReactToAddEntityIntent("op"), RecordingIO()
-    op.perform(state, io)
-    populator = op._details_populators[EntityKind.PACKAGE]
-    state.human_utterance, state.human_intent = Utterance(ADD_BOOKS), INTENTS[ADD_BOOKS]
-    op.perform(state, io)
-    assert op._details_populators[EntityKind.PACKAGE] is populator and len(populator.calls) == 2
-    assert {location_of(state, name) for name in ("package2", "package3")} == {"office_boston"}
-
-
-@pytest.mark.parametrize("phrase", [ADD_OFFICE, ADD_SOMETHING])
-def test_add_entity_of_a_kind_it_cannot_add_says_so(phrase):
-    state, reply, _ = react(ReactToAddEntityIntent, phrase)
-    assert reply == "Sorry, I can only add packages, trucks, and airplanes."
-
-
-def test_add_entity_without_a_location_asks_for_one():
-    state, reply, _ = react(ReactToAddEntityIntent, ADD_NOWHERE)
-    assert reply == ("Where is the new package? Please tell me again, including the office, airport, or vehicle "
-                     "it is at.")
-    assert state.reasoner.find_entity("package2") is None
-
-
-def test_add_entity_at_an_unknown_location_says_so():
-    state, reply, _ = react(ReactToAddEntityIntent, ADD_NARNIA)
-    assert reply == "Sorry, I do not know of a place called narnia."
-    assert state.reasoner.find_entity("package2") is None
-
-
-@pytest.mark.parametrize("phrase, kind", [(ADD_VAGUE, "package"), (ADD_TRUCK_AT_GAS_PRICE, "truck")])
-def test_add_entity_it_cannot_fill_in_or_place_asks_for_the_details(phrase, kind):
-    state, reply, _ = react(ReactToAddEntityIntent, phrase)
-    assert reply.startswith(f"Sorry, I could not add that {kind}. Please tell me its display_name, ")
-    assert state.reasoner.find_entity(f"{kind}3" if kind == "truck" else "package2") is None
-
-
-# --- update entity
-
-
-def test_update_entity_changes_it_and_says_what_changed():
-    state, reply, op = react(ReactToUpdateEntityIntent, UPDATE_GAS)
-    assert reply == "Updated the gas price: per_mile is now 0.95."
-    assert state.reasoner.find_entity("gas_price").per_mile == 0.95
-    assert state.reasoner.find_entity("made_up_by_the_llm") is None
-    populator = op._details_populators[GasPrice]
-    [(_, _, extra)] = populator.calls
-    assert extra == ('current values: {"name":"gas_price","per_mile":0.8}',)
-
-
-def test_update_entity_reports_the_changed_field():
-    state, reply, _ = react(ReactToUpdateEntityIntent, UPDATE_CRATE)
-    assert reply == "Updated the crate of machine parts: weight is now 500.0."
-    assert state.reasoner.find_entity("package1").weight == 500
-
-
-def test_update_entity_keeps_its_location():
-    state, reply, _ = react(ReactToUpdateEntityIntent, UPDATE_BERTHA)
-    assert reply == "Updated the Big Bertha: max_payload is now 12000.0."
-    assert location_of(state, "truck1") == "SEA"
-
-
-def test_update_entity_with_the_same_values_says_nothing_changed():
-    _, reply, _ = react(ReactToUpdateEntityIntent, UPDATE_GAS_SAME)
-    assert reply == "The gas price already has those values; nothing changed."
-
-
-@pytest.mark.parametrize("phrase", [UPDATE_SOMETHING, UPDATE_UNICORN])
-def test_update_entity_it_cannot_find_asks_again(phrase):
-    _, reply, _ = react(ReactToUpdateEntityIntent, phrase)
-    assert reply == "Sorry, I did not catch what you want to change."
-
-
-def test_update_entity_it_cannot_fill_in_leaves_it_unchanged():
-    state, reply, _ = react(ReactToUpdateEntityIntent, UPDATE_VAGUE)
-    assert reply == "Sorry, I could not work out the new values for the gas price."
-    assert state.reasoner.find_entity("gas_price").per_mile == 0.8
-
-
-# --- extract and set goal sub-process
-
-
-def sub_process_io(phrase: str | None = None) -> SimpleNamespace:
-    """stands in for the sub-process's io container: io.a holds the arguments the parent operator supplies"""
-    reasoner = Reasoner()
-    return SimpleNamespace(a=SimpleNamespace(
-        outcome=Utterance(phrase), reasoner=reasoner, planner=LogisticsPlanner(reasoner.world)
-    ))
-
-
-def run_sub_process(phrase: str) -> tuple[GoalState | None, LogisticsPlanner]:
-    """runs a fresh ExtractAndSetGoal on the phrase, as the parent operator does; returns its final state and the
-    planner it was given"""
-    reasoner = Reasoner()
-    planner = LogisticsPlanner(reasoner.world)
-    return ExtractAndSetGoal()(outcome=Utterance(phrase), reasoner=reasoner, planner=planner), planner
-
-
-def test_sub_process_sets_the_goal_and_words_the_confirmation():
-    result, planner = run_sub_process(OUTCOME)
-    assert result.desired_outcome == POPULATED[DesiredOutcome, OUTCOME]
-    assert [(f.entity1.name, f.entity2.name) for f in result.goal] == [("package1", "office_denver")]
-    assert planner.goal == tuple(result.goal)
-    assert result.reply == ("Got it: the crate of machine parts at the Denver Office. "
-                            "Ask me for a price estimate whenever you are ready.")
-
-
-@pytest.mark.parametrize("phrase", [VAGUE_OUTCOME, UNKNOWN_OUTCOME, IMPOSSIBLE_OUTCOME])
-def test_sub_process_asks_again_and_leaves_the_goal_unset_when_the_outcome_does_not_resolve(phrase):
-    result, planner = run_sub_process(phrase)
-    assert result.goal == [] and result.reply == ASK_AGAIN
-    assert planner.goal is None
-
-
-def test_sub_process_returns_none_when_an_operator_fails():
-    result, _ = run_sub_process(GARBLED_OUTCOME)
-    assert result is None
-
-
-def test_sub_process_can_be_restarted_for_another_outcome():
-    sub_process = ExtractAndSetGoal()
-    reasoner = Reasoner()
-    planner = LogisticsPlanner(reasoner.world)
-    sub_process(outcome=Utterance(OUTCOME), reasoner=reasoner, planner=planner)
-    sub_process.reinit()
-    result = sub_process(outcome=Utterance(TWO_OUTCOMES), reasoner=reasoner, planner=planner)
-    assert [(f.entity1.name, f.entity2.name) for f in planner.goal] == [("package1", "office_san_francisco"), ("air1", "SFO")]
-    assert result.reply.startswith("Got it: the crate of machine parts at the San Francisco Office; ")
-
-
-def test_extract_outcome_populates_over_the_outcome_model_with_the_known_entities():
-    op, io = ExtractOutcome("extract_outcome"), sub_process_io(OUTCOME)
-    state = GoalState()
+def estimate(state: ConversationState | None = None) -> ConversationState:
+    """has ReactToEstimatePriceIntent handle a price question about the pallet of chairs; checks that it applies, that
+    it handles the utterance without noting or saying anything, and that the intent stays on the stack for
+    DescribePlan"""
+    state = heard(PRICE, with_chairs(state or ConversationState()))
+    op, io = ReactToEstimatePriceIntent("op"), RecordingIO()
     assert op.can_perform(state, io)
     op.perform(state, io)
-    populator = op._outcome_populator
-    assert populator.model_type is DesiredOutcome and populator.task_desc == ExtractOutcome.TASK_DESC
-    assert populator.calls == [(OUTCOME, conductor.DEFAULT_LLM, tuple(known_entities(io.a.reasoner.world)))]
-    assert not op.can_perform(state, io)
+    assert state.human_utterance is None and state.human_intent is None
+    assert not io.said and not state.partial_responses
+    assert state.top is PRICE_INTENT
+    return state
 
 
-@pytest.mark.parametrize("state, applies", [
-    (GoalState(), {ExtractOutcome}),
-    (GoalState(desired_outcome=DesiredOutcome(facts=[])), {ResolveGoal}),
-    (GoalState(desired_outcome=DesiredOutcome(facts=[]), goal=[]), {AskAgain}),
-    (GoalState(desired_outcome=DesiredOutcome(facts=[]), goal=["a goal fact"]), {SetGoal}),
-    (GoalState(desired_outcome=DesiredOutcome(facts=[]), goal=[], reply=ASK_AGAIN), set()),
+def no_plan():
+    raise RuntimeError("Plan not available")
+
+
+def test_estimate_price_records_the_plan_and_its_cost_as_the_price():
+    state = estimate()
+    assert state.price == 802.0 and sum(action.cost for action in state.plan) == state.price
+    assert isinstance(state.plan[-1], UnloadAction) and state.plan[-1].location.name == "shipping-destination"
+
+
+def test_estimate_price_leaves_the_world_graph_and_the_planner_as_they_were():
+    state = ConversationState()
+    before = state.reasoner.world.snapshot
+    estimate(state)
+    assert state.reasoner.world.snapshot == before
+    assert not state.planner.can_plan()
+
+
+def test_estimate_price_records_no_plan_when_no_delivery_can_be_planned(monkeypatch):
+    state = ConversationState()
+    before = state.reasoner.world.snapshot
+    monkeypatch.setattr(state.planner, "plan", no_plan)
+    estimate(state)
+    assert state.plan is None and state.price is None
+    assert state.reasoner.world.snapshot == before
+
+
+def describe(state: ConversationState) -> str:
+    """has DescribePlan describe the plan; checks that it applies and notes one thing; returns the note"""
+    op, io = DescribePlan("op"), RecordingIO()
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert not io.said
+    [note] = state.partial_responses
+    return note
+
+
+def test_describe_plan_notes_the_price_and_the_description_of_the_plan_and_pops_its_intent():
+    state = estimate(working_on(GREETING))
+    assert describe(state) == PRICE_REPLY
+    assert state.intent_stack == [GREETING]
+
+
+def test_describe_plan_has_describe_facts_describe_the_plan_with_the_default_llm(fake_language):
+    state = estimate()
+    describe(state)
+    [(facts, task_desc, llm)] = fake_language.calls
+    assert facts == tuple(state.plan) and task_desc == DescribePlan.TASK_DESC and llm is conductor.DEFAULT_LLM
+
+
+def test_describe_plan_does_not_describe_facts_when_no_delivery_could_be_planned(monkeypatch, fake_language):
+    state = ConversationState()
+    monkeypatch.setattr(state.planner, "plan", no_plan)
+    describe(estimate(state))
+    assert fake_language.calls == []
+
+
+def test_describe_plan_says_so_when_no_delivery_could_be_planned(monkeypatch):
+    state = ConversationState()
+    monkeypatch.setattr(state.planner, "plan", no_plan)
+    note = describe(estimate(state))
+    assert note == (
+        "Sorry, I could not find a way to deliver the pallet of office chairs from Seattle to San Francisco."
+    )
+    assert state.intent_stack == []
+
+
+def test_describe_plan_waits_until_the_price_question_has_been_handled():
+    assert not DescribePlan("op").can_perform(heard(PRICE), RecordingIO())
+
+
+# --- ending the turn
+
+
+def test_reply_says_the_partial_responses_and_starts_listening_once_the_stack_is_empty():
+    state, io = working_on(), RecordingIO()
+    state.partial_responses = ["Hello!", "Glad to help."]
+    op = Reply("op")
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert io.said == ["Hello! Glad to help."]
+    assert state.partial_responses == [] and state.listening and state.asked is None
+
+
+@pytest.mark.parametrize("make_state", [
+    lambda: working_on(GREETING),
+    lambda: heard(GIBBERISH),
+    lambda: ConversationState(),
 ])
-def test_exactly_one_sub_process_operator_applies_at_each_step(state, applies):
-    io = sub_process_io(OUTCOME)
-    ops = {ExtractOutcome: ExtractOutcome("op"), ResolveGoal: ResolveGoal("op"), SetGoal: SetGoal("op"),
-           AskAgain: AskAgain("op")}
-    assert {op_type for op_type, op in ops.items() if op.can_perform(state, io)} == applies
-
-
-# --- extract and set current sub-process
-
-
-def location_io(phrase: str | None = None) -> SimpleNamespace:
-    """stands in for the sub-process's io container: io.a holds the arguments the parent operator supplies"""
-    reasoner = Reasoner()
-    return SimpleNamespace(a=SimpleNamespace(
-        location=Utterance(phrase), reasoner=reasoner, planner=LogisticsPlanner(reasoner.world)
-    ))
-
-
-def run_current_sub_process(phrase: str) -> tuple[CurrentState | None, LogisticsPlanner]:
-    """runs a fresh ExtractAndSetCurrent on the phrase, as a parent operator does; returns its final state and the
-    planner it was given"""
-    reasoner = Reasoner()
-    planner = LogisticsPlanner(reasoner.world)
-    return ExtractAndSetCurrent()(location=Utterance(phrase), reasoner=reasoner, planner=planner), planner
-
-
-def test_current_sub_process_sets_the_current_facts_and_words_the_confirmation():
-    result, planner = run_current_sub_process(CRATE_IN_SEATTLE)
-    assert result.current_location == POPULATED[CurrentLocation, CRATE_IN_SEATTLE]
-    assert [(f.entity1.name, f.entity2.name) for f in result.current] == [("package1", "office_seattle")]
-    assert planner.current == tuple(result.current)
-    assert result.reply == ("Got it: the crate of machine parts is at the Seattle Office. "
-                            "Ask me for a price estimate whenever you are ready.")
-
-
-@pytest.mark.parametrize("phrase", [CRATE_SOMEWHERE, CRATE_IN_NARNIA])
-def test_current_sub_process_asks_where_and_leaves_the_current_facts_unset(phrase):
-    result, planner = run_current_sub_process(phrase)
-    assert result.current == [] and result.reply == ASK_WHERE
-    assert planner.current is None
-
-
-def test_current_sub_process_returns_none_when_an_operator_fails():
-    result, _ = run_current_sub_process(GARBLED_LOCATION)
-    assert result is None
-
-
-def test_extract_current_location_populates_over_the_location_model_with_the_known_entities():
-    op, io = ExtractCurrentLocation("extract_current_location"), location_io(CRATE_IN_SEATTLE)
-    state = CurrentState()
-    assert op.can_perform(state, io)
-    op.perform(state, io)
-    populator = op._location_populator
-    assert populator.model_type is CurrentLocation and populator.task_desc == ExtractCurrentLocation.TASK_DESC
-    assert populator.calls == [(CRATE_IN_SEATTLE, conductor.DEFAULT_LLM, tuple(known_entities(io.a.reasoner.world)))]
-    assert not op.can_perform(state, io)
-
-
-@pytest.mark.parametrize("state, applies", [
-    (CurrentState(), {ExtractCurrentLocation}),
-    (CurrentState(current_location=CurrentLocation(facts=[])), {ResolveCurrent}),
-    (CurrentState(current_location=CurrentLocation(facts=[]), current=[]), {AskWhere}),
-    (CurrentState(current_location=CurrentLocation(facts=[]), current=["a fact"]), {SetCurrent}),
-    (CurrentState(current_location=CurrentLocation(facts=[]), current=[], reply=ASK_WHERE), set()),
-])
-def test_exactly_one_current_sub_process_operator_applies_at_each_step(state, applies):
-    io = location_io(CRATE_IN_SEATTLE)
-    ops = {ExtractCurrentLocation: ExtractCurrentLocation("op"), ResolveCurrent: ResolveCurrent("op"),
-           SetCurrent: SetCurrent("op"), AskWhere: AskWhere("op")}
-    assert {op_type for op_type, op in ops.items() if op.can_perform(state, io)} == applies
-
+def test_reply_waits_while_there_is_work_left_or_the_agent_is_listening(make_state):
+    assert not Reply("op").can_perform(make_state(), RecordingIO())

@@ -1,37 +1,39 @@
 # Logistics support agent
 
-Imagine a small carrier company. It has offices and airport access in five cities (Seattle, San Francisco, Boston,
+Imagine a small carrier company. It has terminals and airport access in five cities (Seattle, San Francisco, Boston,
 Denver, and Detroit), and it owns only a few vehicles: two box trucks and one cargo airplane. Customers keep asking
-the same question: *how much will it cost to get my package there?*
+the same question: *how much will it cost to get my shipment there?*
 
 Answering takes real work. The cheapest way to deliver depends on where each vehicle is right now, which roads and air
 routes connect the cities, today's gas price, and what crews in each city charge to load and unload. A truck may
-need to drive to the package before it can carry it. Sometimes flying beats driving, and sometimes it doesn't. A quote
+need to drive to the shipment before it can carry it. Sometimes flying beats driving, and sometimes it doesn't. A quote
 that is guessed instead of worked out loses money or loses the customer.
 
-This repository is a logistics support agent for that carrier. You talk to it in plain language. It works out the
-cheapest sequence of drives, flights, loads, and unloads that gets the package where the customer wants it, and
-replies with a step-by-step estimate. The carrier's staff can talk to it the same way to keep it current: they can
-ask where the vehicles are, add new packages, or change the gas price, and the next quote reflects the change.
+This repository is a logistics support agent for that carrier. You talk to it in plain language. The goal is for it
+to work out the cheapest sequence of drives, flights, loads, and unloads that gets the shipment where the customer
+wants it, and reply with a step-by-step estimate.
+
+> **Work in progress:** the human describes the whole delivery in one go: what is shipped, how much it weighs, and
+> the cities it goes from and to. The agent does not yet ask for a part that is missing; a new delivery described
+> later replaces the earlier one.
 
 It is a demo of [polycog cognition](https://pypi.org/project/polycog-cognition/). A language model understands what
 the human says, but it never sets a price. A world graph, a reasoner, and a search planner decide what is true and
-what a delivery costs.
+what a delivery costs. The language model only words the plan, so the description of the steps varies from run
+to run.
 
 ```
 cogent> Hi - I am your logistics support agent. I can help you estimate prices for various deliveries.
-you> which trucks do we have?
-cogent> Big Bertha is a Freightliner M2 106 26ft box truck with a max payload of 10,000 pounds and license plate
-        C12345A. Little Rocket is an Isuzu NPR-HD 16ft box truck with a max payload of 6,000 pounds and license
-        plate C67890B.
-you> where is big bertha right now?
-cogent> Big Bertha is currently at Seattle-Tacoma International Airport.
-you> set the gas price to 0.95 per mile
-cogent> Updated the gas price: per_mile is now 0.95.
-you> how much to ship the crate of machine parts from seattle to denver?
-cogent> 1. Drive truck 'Big Bertha' from Seattle-Tacoma International Airport to Seattle Office. Cost: $50.0
-        ...
-        Final Estimate: $1200.0
+you> hello there
+cogent> Hello! I am happy to help with your deliveries.
+you> I need to ship a pallet of office chairs, 800 pounds, from Seattle to San Francisco
+cogent> Got it: the pallet of office chairs (800 lb) from Seattle to San Francisco. Ask me what it costs whenever you are ready.
+you> how much will it cost?
+cogent> Delivering the pallet of office chairs from Seattle to San Francisco costs $802.00. Big Bertha drives from the Seattle Terminal to the pickup in Seattle for $50, where the chairs are loaded for $48; it then drives to the drop-off in San Francisco for $640, where they are unloaded for $64.
+you> thanks!
+cogent> You're welcome.
+you> bye
+cogent> Goodbye!
 ```
 
 ## Quick start
@@ -93,31 +95,23 @@ misunderstanding.
 
 | Ask | Example |
 | --- | --- |
-| A price estimate | "how much to ship the crate from seattle to denver?" |
-| Where a package is now | "the crate is at the boston office" |
-| Where a delivery should end up | "I want the crate of machine parts to end up in denver" |
-| What the network has | "which trucks do we have?", "what is the gas price?" |
-| Where things are right now | "where is big bertha?", "what is at the seattle airport?" |
-| Add a package, truck, or airplane | "add a 200 lb package of books at the boston office" |
-| Change something | "set the gas price to 0.95 per mile", "the crate now weighs 500 lb" |
-
-A price estimate plans from where the package is now to where it should end up. Say both in one question ("from
-seattle to denver"), or one at a time; the agent remembers them for the next estimate. If it does not yet know where
-the package is, or where it should go, it asks. Changes you make (a new gas price, a new package) feed straight into
-the next estimate.
+| Say hello | "hello there" |
+| What the agent can do | "what can you do?" |
+| Acknowledge the agent | "thanks" (the agent replies and repeats any question it was waiting on); "ok", "got it" (the agent says nothing) |
+| Stop | "quit", "exit", "bye" |
 
 ## The world
 
-Five cities — Seattle, San Francisco, Boston, Denver, and Detroit — each with one office and one airport.
+Five cities — Seattle, San Francisco, Boston, Denver, and Detroit — each with one terminal and one airport.
 
-- **Trucks** drive between an office and the airport in the same city, or between offices in different cities.
-  Long-distance drives cost the gas price per mile.
+- **Trucks** drive between locations in the same city, or between locations in two cities that a truck route
+  connects, as long as both cities have a terminal. Long-distance drives cost the gas price per mile of the route.
 - **Airplanes** fly between airports along air routes, each with its own price.
-- **Packages** move only by being loaded into a vehicle. Loading and unloading cost the package's weight times the
+- **Shipments** move only by being loaded into a vehicle. Loading and unloading cost the shipment's weight times the
   labor rate in that city.
 
 At the start, Big Bertha and The Pelican (an airplane) are at Seattle-Tacoma airport, and Little Rocket is at San
-Francisco airport. The crate of machine parts (1000 lb) is wherever the customer says it is. The planner searches for the cheapest
+Francisco airport. There are no shipments at the start, and a shipment is wherever you say it is. The planner searches for the cheapest
 sequence of drives, flights, loads, and unloads that reaches the goal.
 
 ## How it works
@@ -135,17 +129,17 @@ pyproject.toml     dependencies and the logistics-agent command
 | --- | --- |
 | `assistant.py` | Runs the agent: reads lines from the terminal, prints replies, and loops until the human quits. |
 | `conductor.py` | The decision process: the conversation state and one operator per thing the agent can do. |
-| `extract_and_set_current.py` | A decision sub-process: turns where the human says a package is into the planner's current facts. |
-| `extract_and_set_goal.py` | A decision sub-process: turns the human's desired outcome into the planner's goal and words the reply. |
+| `extract_shipping_request.py` | The sub-process that extracts a shipping request from what the human says: the cities it goes from and to, which can only be cities the carrier serves, and the shipment. |
 | `communicator.py` | Language understanding: the intents, the models the LLM fills in, and the LLM configuration. |
 | `reasoner.py` | Builds and maintains the world graph, and answers queries and updates against it. |
 | `planner.py` | The search planner: what each action does to the world, and the search for the cheapest plan. |
-| `domain.py` | The domain model: cities, offices, airports, vehicles, packages, routes, costs, and actions. |
+| `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles, shipments, routes, costs, actions, and the shipping query (a shipment, the terminal it is sent from, and the terminal it goes to). |
 
-Every turn, the conductor recognizes the human's intent with an `EnumClassifier`, then one operator reacts to it.
-Operators use `ModelPopulator` to turn the utterance into a typed model (for example, a `StateQuery` naming the
-truck being asked about), ask the reasoner or planner for the answer, and use `describe_facts` to say it in plain
-language. The language model never decides facts or prices — it only translates between the human and the graph.
+The conductor manages the conversation with a **stack of intents**. Every turn, it recognizes the human's intent
+with an `EnumClassifier` and pushes it onto the stack; the intent on top decides what happens next.
+The intents live in `communicator.py` as `HumanIntent`, what the human wants. Each intent is popped once it is done.
+
+The language model never decides facts or prices — it only translates between the human and the graph.
 
 ## Running the tests
 
