@@ -12,6 +12,8 @@ import pytest
 
 from logistics_agent import assistant, conductor, extract_shipping_request
 from logistics_agent.communicator import HumanIntent, Utterance
+from logistics_agent.console import AGENT_PREFIX
+from logistics_agent.trace import Step
 from logistics_agent.conductor import (
     Acknowledge,
     AskForShippingRequest,
@@ -45,12 +47,12 @@ BOOKS_CONFIRMATION = (
     "Got it: the box of books (200 lb) from Seattle to Denver. Ask me what it costs whenever you are ready."
 )
 BOOKS_PRICE_REPLY = (
-    "Delivering the box of books from Seattle to Denver costs $1,112.00. "
+    "Delivering the box of books from Seattle to Denver costs $1,112.00. \n \n "
     "DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
 )
 PRICE_REPLY = (
     "Delivering the pallet of office chairs from Seattle to San Francisco "
-    "costs $802.00. DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
+    "costs $802.00. \n \n DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
 )
 QUESTION = "Where is the shipment now?"
 
@@ -119,7 +121,7 @@ def fake_language(monkeypatch):
 def chat(monkeypatch, capsys):
     """runs the agent through a script of human lines; returns the agent's replies, in order"""
 
-    def run(*lines: str) -> list[str]:
+    def run(*lines: str, args: tuple[str, ...] = ()) -> list[str]:
         script = deque(lines)
 
         def scripted_input(_prompt: str = "") -> str:
@@ -128,9 +130,9 @@ def chat(monkeypatch, capsys):
             return script.popleft()
 
         monkeypatch.setattr("builtins.input", scripted_input)
-        assistant.main()
+        assistant.main(list(args))
         out = capsys.readouterr().out
-        replies = out.split("cogent> ")[1:]
+        replies = out.split(AGENT_PREFIX)[1:]
         return [reply.strip() for reply in replies]
 
     return run
@@ -184,6 +186,61 @@ def test_asking_for_a_price_before_describing_the_delivery_asks_for_the_delivery
 
 def test_a_described_delivery_is_confirmed_and_then_priced(chat):
     assert chat(SHIPPING, PRICE, "quit") == [INTRODUCTION, BOOKS_CONFIRMATION, BOOKS_PRICE_REPLY, "Goodbye!"]
+
+
+def test_with_trace_the_steps_of_the_reasoning_are_shown_among_the_replies(chat):
+    replies = chat(SHIPPING, "quit", args=("--trace",))
+    shown = "\n".join(replies)
+    for step in ("· conductor: recognize_intent", "· conductor: react_to_shipping_request_intent",
+                 "· extract_shipping_request: extract_origin", "· extract_shipping_request: extract_shipment",
+                 "· conductor: reply", "· conductor: say_goodbye"):
+        assert step in shown
+    assert BOOKS_CONFIRMATION in shown
+
+
+class RecordingConsole:
+    """stands in for the console, recording the steps and progress shown"""
+
+    def __init__(self) -> None:
+        self.shown: list[tuple] = []
+
+    def show_step(self, depth: int, source: str, action: str, kind: str = "decision") -> None:
+        self.shown.append(("step", depth, source, action, kind))
+
+    def show_progress(self, text: str) -> None:
+        self.shown.append(("progress", text))
+
+
+def test_the_planners_search_steps_are_counted_on_the_spinner_and_other_steps_shown_one_by_one():
+    console = RecordingConsole()
+    report = assistant.StepReporter(console)
+    report(Step(0, "decision", "DecisionProcess", "react_to_estimate_price_intent"))
+    report(Step(2, "decision", "BaseDecisionProcess", "search"))
+    report(Step(2, "decision", "BaseDecisionProcess", "search"))
+    report(Step(1, "planner", "planner", "search for the cheapest plan: 2 search steps, 1 states explored"))
+    report(Step(0, "decision", "DecisionProcess", "describe_plan"))
+    report(Step(1, "llm", "llm", "describe facts"))
+    report(Step(2, "decision", "BaseDecisionProcess", "search"))
+    assert console.shown == [
+        ("step", 0, "conductor", "react_to_estimate_price_intent", "decision"),
+        ("progress", "planning… 1 search steps"),
+        ("progress", "planning… 2 search steps"),
+        ("step", 1, "planner", "search for the cheapest plan: 2 search steps, 1 states explored", "planner"),
+        ("step", 0, "conductor", "describe_plan", "decision"),
+        ("step", 1, "llm", "describe facts", "llm"),
+        ("progress", "planning… 1 search steps"),
+    ]
+
+
+def test_with_trace_the_planner_and_the_language_model_are_shown_but_not_the_search_step_by_step(chat):
+    shown = "\n".join(chat(SHIPPING, PRICE, "quit", args=("--trace",)))
+    assert re.search(
+        r"· conductor: react_to_estimate_price_intent\n    · planner: search for the cheapest plan: \d+ search steps, "
+        r"\d+ states explored\n",
+        shown,
+    )
+    assert "· conductor: describe_plan\n    · llm: describe facts" in shown
+    assert "BaseDecisionProcess" not in shown
 
 
 def test_ok_gets_no_reply_and_thanks_is_answered(chat):

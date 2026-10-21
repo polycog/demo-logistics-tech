@@ -4,12 +4,29 @@ version = "0.1.0"
 description = "A logistics support agent for a small logistics network, built with polycog cognition"
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Polycog" }]
 requires-python = ">=3.13"
+keywords = ["cognitive agents", "conversational agents", "planning", "logistics", "llm", "polycog-cognition"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "polycog-cognition>=1.0.2",
     "pydantic-ai-slim[openai]",
+    "rich>=15.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/polycog/demo-logistics-tech"
+Repository = "https://github.com/polycog/demo-logistics-tech"
+Issues = "https://github.com/polycog/demo-logistics-tech/issues"
 
 [project.scripts]
 logistics-agent = "logistics_agent.assistant:main"

@@ -405,7 +405,7 @@ class DescribePlan(Operator[ConversationState]):
 
     TASK_DESC = (
         "a logistics support agent tells a human how their shipment would be delivered;"
-        "describe the steps as a list in the order they happen, naming vehicles, places, and what each step costs"
+        "describe the steps as an itemized list in the order they happen, naming vehicles, places, and what each step costs"
     )
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
@@ -425,7 +425,7 @@ class DescribePlan(Operator[ConversationState]):
             state.partial_responses.append(f"Sorry, I could not find a way to deliver {delivery}.")
         else:
             steps = describe_facts(state.plan, self.TASK_DESC, DEFAULT_LLM)
-            state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}. {steps}")
+            state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}. \n \n {steps}")
         state.pop(HumanIntent.ESTIMATE_PRICE)
 
 

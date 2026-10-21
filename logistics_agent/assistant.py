@@ -1,9 +1,12 @@
 """logistics support cogent that talks to a human through the terminal: its terminal interface to the human,
 the builders that put the decision process and the cogent together, and the loop that runs it"""
 
+import argparse
+
 from cognition import Actuator, Cogent, DecisionProcess, DecisionProcessErrorMessage, Sensor
 
 from logistics_agent.communicator import Utterance
+from logistics_agent.console import Console
 from logistics_agent.conductor import (
     Acknowledge,
     AskForShippingRequest,
@@ -19,16 +22,43 @@ from logistics_agent.conductor import (
     RespondUnknown,
     SayGoodbye,
 )
+from logistics_agent.trace import Step, trace
+
+# how the reasoning steps name each decision process, by its type's name
+PROCESS_LABELS = {"DecisionProcess": "conductor", "ExtractShippingRequest": "extract_shipping_request"}
+# the decision process the planner searches with, whose steps are counted on the spinner instead of shown one by one
+SEARCH_PROCESS = "BaseDecisionProcess"
+
+
+class StepReporter:
+    """shows the steps of the agent's reasoning on the console, one line per step, in the color of its kind, except
+    the steps of the planner's search, which number in the hundreds and are counted beside the spinner"""
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+        # the search steps the planner has taken since the last step shown
+        self.searched = 0
+
+    def __call__(self, step: Step) -> None:
+        """reports one step"""
+        if step.kind == "decision" and step.source == SEARCH_PROCESS:
+            self.searched += 1
+            self.console.show_progress(f"planning… {self.searched} search steps")
+            return
+        self.searched = 0
+        self.console.show_step(step.depth, PROCESS_LABELS.get(step.source, step.source), step.action, step.kind)
 
 
 class HumanInteraction(Sensor[Utterance], Actuator[Utterance, None]):
     """sensor and actuator for talking to the human through terminal input and output
 
     sensor: reads one line typed by the human
-    actuator: prints the cogent's reply
+    actuator: shows the cogent's reply
     """
 
-    def __init__(self) -> None:
+    def __init__(self, console: Console | None = None) -> None:
+        """talks to the human on the console, which shows that the cogent is thinking while it works on a line"""
+        self.console = console or Console()
         self._conversation_started = False
 
     @property
@@ -45,17 +75,20 @@ class HumanInteraction(Sensor[Utterance], Actuator[Utterance, None]):
         if not self._conversation_started:
             self._conversation_started = True
             return Utterance(phrase=None)
+        self.console.stop_thinking()
         try:
-            phrase = input("you> ").strip()
+            phrase = self.console.read_line().strip()
         except EOFError:
-            print()
+            print(file=self.console.out)
             phrase = "quit"
+        if phrase:
+            self.console.start_thinking()
         return Utterance(phrase=phrase or None)
 
     def actuate(self, param: Utterance) -> None:
-        """prints the cogent's reply to the terminal"""
+        """shows the cogent's reply on the console"""
         if param.phrase:
-            print(f"cogent> {param.phrase}")
+            self.console.show_reply(param.phrase)
 
 
 def build_decision_process() -> tuple[DecisionProcess[ConversationState], ConversationState]:
@@ -81,18 +114,36 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     return dp, state
 
 
-def build_assistant() -> tuple[Cogent[DecisionProcess[ConversationState]], ConversationState]:
+def build_assistant(
+    interaction: HumanInteraction | None = None,
+) -> tuple[Cogent[DecisionProcess[ConversationState]], ConversationState]:
     """builds the cogent around the decision process, with the terminal interaction as its sensor and actuator"""
     dp, state = build_decision_process()
     assistant: Cogent[DecisionProcess[ConversationState]] = Cogent(decision_process=dp, name="logistics_support_agent")
-    interaction = HumanInteraction()
+    interaction = interaction or HumanInteraction()
     assistant.add_sensor(interaction).add_actuator(interaction)
     return assistant, state
 
 
-def main() -> None:
-    """runs the perceive-decide-act loop until the human quits"""
-    assistant, state = build_assistant()
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """the command-line options: argv, or the arguments the program was started with"""
+    parser = argparse.ArgumentParser(description="talk to the logistics support agent")
+    parser.add_argument(
+        "--trace", action="store_true", help="show which operator each decision process applies, step by step"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """runs the perceive-decide-act loop until the human quits; with --trace, shows the steps of the agent's
+    reasoning as it goes"""
+    args = parse_args(argv)
+    console = Console()
+    stop_tracing = None
+    if args.trace:
+        # tracing must start before the decision processes are created, so it covers them all
+        stop_tracing = trace(StepReporter(console))
+    assistant, state = build_assistant(HumanInteraction(console))
 
     def keep_going(_cogent: Cogent[DecisionProcess[ConversationState]]) -> bool:
         """continue looping until the human has said goodbye"""
@@ -104,11 +155,15 @@ def main() -> None:
             return True
         raise RuntimeError(err)
 
-    print("(type 'quit' to stop)")
+    console.show_note("(type 'quit' to stop)")
     try:
         assistant(keep_going, dp_err_p=ignore_empty_input)
     except KeyboardInterrupt:
-        print("\nExecution interrupted.")
+        console.stop_thinking()
+        console.show_note("\nExecution interrupted.")
+    finally:
+        if stop_tracing is not None:
+            stop_tracing()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Logistics support agent: a demo of polycog cognition"
+abstract: >-
+  A conversational logistics support agent for a small carrier company. A language model understands what the human
+  says, while a world graph, a reasoner, and a search planner work out the cheapest way to deliver a shipment and
+  what it costs. Built with polycog cognition.
+authors:
+  - name: Polycog
+repository-code: "https://github.com/polycog/demo-logistics-tech"
+license: Apache-2.0
+version: 0.1.0
+keywords:
+  - cognitive agents
+  - conversational agents
+  - planning
+  - logistics
+  - large language models
+  - polycog cognition
