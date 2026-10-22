@@ -12,7 +12,7 @@ language model understands what a human says and generates the agent's replies; 
 Every answer the agent gives is reasoned out from what it knows, not guessed by the language
 model.
 
-**[▶ Watch the demo](https://drive.google.com/file/d/1rDBJO3MaF7s5Xn8SjfjTN-VBQL3Mcc5_/view?usp=sharing)** to see the agent at work.
+**[▶ Watch the demo](https://drive.google.com/file/d/1KbiW5nJUbtehfRNWvjA9JTc0np8MuhKm/view?usp=sharing)** to see the agent at work.
 
 ## The use case: quoting deliveries
 
