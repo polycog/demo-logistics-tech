@@ -10,17 +10,20 @@ from collections import deque
 
 import pytest
 
-from logistics_agent import assistant, conductor, extract_shipping_request
-from logistics_agent.communicator import HumanIntent, Utterance
+from logistics_agent import assistant, conductor, fill_shipping_request
+from logistics_agent.communicator import AgentIntent, AskFor, HumanIntent, NotUnderstood, Utterance
 from logistics_agent.console import AGENT_PREFIX
 from logistics_agent.trace import Step
 from logistics_agent.conductor import (
     Acknowledge,
-    AskForShippingRequest,
+    AskQuestion,
+    ConfirmShippingRequest,
     INTRODUCTION,
     ConversationState,
     DescribePlan,
     Introduce,
+    PlanDelivery,
+    PopSatisfiedAsk,
     ReactToAskCapabilitiesIntent,
     ReactToEstimatePriceIntent,
     ReactToGreetingIntent,
@@ -31,10 +34,10 @@ from logistics_agent.conductor import (
     SayGoodbye,
 )
 from logistics_agent.domain import At, City, Location, Shipment, ShippingRequest, UnloadAction
-from logistics_agent.extract_shipping_request import (
+from logistics_agent.fill_shipping_request import (
     ExtractDestination,
     ExtractOrigin,
-    ExtractShippingRequest,
+    ShippingRequestFiller,
     ShippingRequestState,
 )
 
@@ -55,6 +58,13 @@ PRICE_REPLY = (
     "costs $802.00. \n \n DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
 )
 QUESTION = "Where is the shipment now?"
+# a delivery described in two parts: the books from Seattle, then where they go
+BOOKS_FROM_SEATTLE = "200 pounds of books from Seattle"
+TO_DENVER = "Denver"
+# an answer about a delivery that gives none of it
+NOWHERE = "somewhere far away"
+REQUEST_QUESTION = AskFor(ShippingRequest).question
+DESTINATION_QUESTION = AskFor(ShippingRequest, "destination").question
 
 INTENTS = {
     GIBBERISH: None,
@@ -62,6 +72,9 @@ INTENTS = {
     CAPABILITIES: HumanIntent.ASK_CAPABILITIES,
     PRICE: HumanIntent.ESTIMATE_PRICE,
     SHIPPING: HumanIntent.SHIPPING_REQUEST,
+    BOOKS_FROM_SEATTLE: HumanIntent.SHIPPING_REQUEST,
+    TO_DENVER: HumanIntent.SHIPPING_REQUEST,
+    NOWHERE: HumanIntent.SHIPPING_REQUEST,
 }
 
 
@@ -92,18 +105,29 @@ class FakeDescribeFacts:
 
 
 class FakeModelPopulator:
-    """stands in for ModelPopulator in the ExtractShippingRequest sub-process: whatever the human said, the delivery
-    is a box of books, 200 pounds, from Seattle to Denver"""
+    """stands in for ModelPopulator in the ShippingRequestFiller sub-process: the delivery is a box of books, 200
+    pounds, from Seattle to Denver, of which BOOKS_FROM_SEATTLE leaves out the destination and TO_DENVER gives only the
+    destination; anything else gives none of it"""
 
-    CITIES = {ExtractOrigin.TASK_DESC: "Seattle", ExtractDestination.TASK_DESC: "Denver"}
+    BOOKS = Shipment(name="books", details="box of books", weight=200)
+    # what each phrase gives: the origin's city, the destination's city, and the shipment, or None for a part it does
+    # not give
+    GIVES = {
+        SHIPPING: ("Seattle", "Denver", BOOKS),
+        BOOKS_FROM_SEATTLE: ("Seattle", None, BOOKS),
+        TO_DENVER: (None, "Denver", None),
+    }
 
     def __init__(self, model_type, task_desc: str) -> None:
         self.model_type, self.task_desc = model_type, task_desc
 
     def __call__(self, utterance: str, llm, *extra: str, **kwargs):
+        origin, destination, shipment = self.GIVES.get(utterance, (None, None, None))
         if self.model_type is Shipment:
-            return Shipment(name="books", details="box of books", weight=200)
-        return self.model_type.model_validate({"city": self.CITIES[self.task_desc]})
+            if shipment is None:
+                raise fill_shipping_request.UnexpectedModelBehavior("no shipment")
+            return shipment
+        return self.model_type.model_validate({"city": origin if self.task_desc == ExtractOrigin.TASK_DESC else destination})
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +137,7 @@ def fake_language(monkeypatch):
     monkeypatch.setattr(conductor, "EnumClassifier", FakeEnumClassifier)
     fake_describe_facts = FakeDescribeFacts()
     monkeypatch.setattr(conductor, "describe_facts", fake_describe_facts)
-    monkeypatch.setattr(extract_shipping_request, "ModelPopulator", FakeModelPopulator)
+    monkeypatch.setattr(fill_shipping_request, "ModelPopulator", FakeModelPopulator)
     return fake_describe_facts
 
 
@@ -181,7 +205,37 @@ def test_greetings_and_capability_questions_are_answered_and_the_conversation_go
 
 
 def test_asking_for_a_price_before_describing_the_delivery_asks_for_the_delivery(chat):
-    assert chat(PRICE, "quit") == [INTRODUCTION, AskForShippingRequest.REPLY, "Goodbye!"]
+    assert chat(PRICE, "quit") == [INTRODUCTION, REQUEST_QUESTION, "Goodbye!"]
+
+
+def test_a_price_asked_first_is_answered_once_the_delivery_and_its_missing_destination_are_given(chat):
+    assert chat(PRICE, BOOKS_FROM_SEATTLE, TO_DENVER, "quit") == [
+        INTRODUCTION,
+        REQUEST_QUESTION,
+        DESTINATION_QUESTION,
+        f"{BOOKS_CONFIRMATION.removesuffix(' Ask me what it costs whenever you are ready.')} {BOOKS_PRICE_REPLY}",
+        "Goodbye!",
+    ]
+
+
+def test_a_delivery_without_its_destination_is_confirmed_once_the_destination_is_given(chat):
+    assert chat(BOOKS_FROM_SEATTLE, TO_DENVER, "quit") == [
+        INTRODUCTION, DESTINATION_QUESTION, BOOKS_CONFIRMATION, "Goodbye!",
+    ]
+
+
+def test_an_answer_that_gives_nothing_gets_the_question_asked_again(chat):
+    assert chat(BOOKS_FROM_SEATTLE, NOWHERE, "quit")[2] == DESTINATION_QUESTION
+
+
+def test_small_talk_while_the_agent_is_asking_is_answered_and_the_question_asked_again(chat):
+    assert chat(BOOKS_FROM_SEATTLE, HELLO, TO_DENVER, "quit") == [
+        INTRODUCTION,
+        DESTINATION_QUESTION,
+        f"{ReactToGreetingIntent.REPLY} {DESTINATION_QUESTION}",
+        BOOKS_CONFIRMATION,
+        "Goodbye!",
+    ]
 
 
 def test_a_described_delivery_is_confirmed_and_then_priced(chat):
@@ -192,7 +246,8 @@ def test_with_trace_the_steps_of_the_reasoning_are_shown_among_the_replies(chat)
     replies = chat(SHIPPING, "quit", args=("--trace",))
     shown = "\n".join(replies)
     for step in ("· conductor: recognize_intent", "· conductor: react_to_shipping_request_intent",
-                 "· extract_shipping_request: extract_origin", "· extract_shipping_request: extract_shipment",
+                 "· fill_shipping_request: extract_origin", "· fill_shipping_request: extract_shipment",
+                 "· fill_shipping_request: compose_asks",
                  "· conductor: reply", "· conductor: say_goodbye"):
         assert step in shown
     assert BOOKS_CONFIRMATION in shown
@@ -235,7 +290,7 @@ def test_the_planners_search_steps_are_counted_on_the_spinner_and_other_steps_sh
 def test_with_trace_the_planner_and_the_language_model_are_shown_but_not_the_search_step_by_step(chat):
     shown = "\n".join(chat(SHIPPING, PRICE, "quit", args=("--trace",)))
     assert re.search(
-        r"· conductor: react_to_estimate_price_intent\n    · planner: search for the cheapest plan: \d+ search steps, "
+        r"· conductor: plan_delivery\n    · planner: search for the cheapest plan: \d+ search steps, "
         r"\d+ states explored\n",
         shown,
     )
@@ -248,7 +303,7 @@ def test_ok_gets_no_reply_and_thanks_is_answered(chat):
 
 
 def test_every_intent_has_an_operator_that_handles_it():
-    assert set().union(*HANDLERS.values()) - {None} == set(HumanIntent)
+    assert {intent for intent in HANDLERS.values() if isinstance(intent, HumanIntent)} == set(HumanIntent)
 
 
 # === single operators
@@ -274,17 +329,16 @@ class RecordingIO:
 
 
 def heard(phrase: str, state: ConversationState | None = None) -> ConversationState:
-    """a conversation state in which the phrase has been heard, its intent recognized and pushed, as RecognizeIntent
-    leaves it"""
+    """a conversation state in which the phrase has been heard, and its intent, or NotUnderstood, pushed, as
+    RecognizeIntent leaves it"""
     state = state or ConversationState()
     state.listening = False
-    state.human_utterance, state.human_intent = Utterance(phrase), INTENTS[phrase]
-    if state.human_intent is not None:
-        state.push(state.human_intent)
+    state.human_utterance = Utterance(phrase)
+    state.push(NotUnderstood() if INTENTS[phrase] is None else INTENTS[phrase])
     return state
 
 
-def working_on(*stack: HumanIntent, state: ConversationState | None = None) -> ConversationState:
+def working_on(*stack: HumanIntent | AgentIntent, state: ConversationState | None = None) -> ConversationState:
     """a conversation state between utterances, with the intents on the stack (the last on top)"""
     state = state or ConversationState()
     state.listening = False
@@ -293,14 +347,15 @@ def working_on(*stack: HumanIntent, state: ConversationState | None = None) -> C
 
 
 def react(op_type: type, phrase: str, state: ConversationState | None = None) -> tuple[ConversationState, str, object]:
-    """has a fresh operator of the type handle the phrase; checks that it applies, that it handles the utterance, and
-    that it notes one thing instead of speaking; returns the state, the note, and the operator"""
+    """has a fresh operator of the type handle the phrase; checks that it applies, that it pops the intent the phrase
+    pushed, and that it notes one thing instead of speaking; returns the state, the note, and the operator"""
     state = heard(phrase, state)
+    pushed = state.top
     op, io = op_type("op"), RecordingIO()
     assert op.can_perform(state, io)
     responses_before = len(state.partial_responses)
     op.perform(state, io)
-    assert state.human_utterance is None and state.human_intent is None
+    assert pushed not in state.intent_stack
     assert not io.said, "operators that handle an utterance note what to say, and the turn says it at the end"
     [note] = state.partial_responses[responses_before:]
     return state, note, op
@@ -309,6 +364,11 @@ def react(op_type: type, phrase: str, state: ConversationState | None = None) ->
 GREETING = HumanIntent.GREETING
 CAPABILITY = HumanIntent.ASK_CAPABILITIES
 PRICE_INTENT = HumanIntent.ESTIMATE_PRICE
+SHIPPING_INTENT = HumanIntent.SHIPPING_REQUEST
+ASK_REQUEST = AskFor(ShippingRequest)
+ASK_ORIGIN = AskFor(ShippingRequest, "origin")
+ASK_DESTINATION = AskFor(ShippingRequest, "destination")
+ASK_SHIPMENT = AskFor(ShippingRequest, "shipment")
 
 
 # --- conversation state and the intent stack
@@ -342,6 +402,26 @@ def test_pop_removes_only_the_intent_on_top():
     assert state.intent_stack == [GREETING]
 
 
+def test_the_stack_holds_the_humans_intents_and_the_agents_asks_and_an_equal_ask_once():
+    state = working_on(PRICE_INTENT, ASK_REQUEST)
+    state.push(ASK_DESTINATION)
+    state.push(AskFor(ShippingRequest))
+    assert state.intent_stack == [PRICE_INTENT, ASK_DESTINATION, ASK_REQUEST]
+    state.pop(AskFor(ShippingRequest))
+    assert state.top == ASK_DESTINATION
+
+
+def test_the_agent_is_asking_for_a_model_while_an_ask_for_it_or_its_attributes_is_on_the_stack():
+    assert not working_on(PRICE_INTENT).asking_for(ShippingRequest)
+    assert working_on(ASK_REQUEST, GREETING).asking_for(ShippingRequest)
+    assert working_on(ASK_ORIGIN).asking_for(ShippingRequest)
+
+
+def test_the_asks_for_a_shipping_request_are_satisfied_by_the_one_being_filled_in():
+    state = with_chairs(ConversationState())
+    assert state.model_of(ShippingRequest) is state.shipping_request
+
+
 def test_planner_can_plan_once_it_has_current_facts_and_a_goal():
     state = ConversationState()
     find = state.reasoner.find_entity
@@ -357,13 +437,19 @@ def test_planner_can_plan_once_it_has_current_facts_and_a_goal():
 
 ALL_OPERATORS = [
     Introduce, SayGoodbye, Acknowledge, RecognizeIntent, RespondUnknown,
-    ReactToGreetingIntent, ReactToAskCapabilitiesIntent, ReactToShippingRequestIntent,
-    AskForShippingRequest, ReactToEstimatePriceIntent, DescribePlan, Reply,
+    ReactToGreetingIntent, ReactToAskCapabilitiesIntent, ReactToShippingRequestIntent, ConfirmShippingRequest,
+    PopSatisfiedAsk, AskQuestion, ReactToEstimatePriceIntent, PlanDelivery, DescribePlan, Reply,
 ]
 
 
 def introduced(state: ConversationState) -> ConversationState:
     state.introduced = True
+    return state
+
+
+def planned(state: ConversationState) -> ConversationState:
+    """the state, with the delivery planned for the price question"""
+    state.planned = True
     return state
 
 
@@ -376,9 +462,15 @@ def introduced(state: ConversationState) -> ConversationState:
     (lambda: introduced(heard(HELLO)), HELLO, ReactToGreetingIntent),
     (lambda: introduced(heard(CAPABILITIES)), CAPABILITIES, ReactToAskCapabilitiesIntent),
     (lambda: introduced(heard(SHIPPING)), SHIPPING, ReactToShippingRequestIntent),
-    (lambda: introduced(heard(PRICE)), PRICE, AskForShippingRequest),
-    (lambda: introduced(heard(PRICE, with_chairs(ConversationState()))), PRICE, ReactToEstimatePriceIntent),
-    (lambda: introduced(working_on(PRICE_INTENT)), PRICE, DescribePlan),
+    (lambda: introduced(heard(PRICE)), PRICE, ReactToEstimatePriceIntent),
+    (lambda: introduced(heard(PRICE, with_chairs(ConversationState()))), PRICE, PlanDelivery),
+    (lambda: introduced(planned(working_on(PRICE_INTENT, state=with_chairs(ConversationState())))), PRICE,
+     DescribePlan),
+    (lambda: introduced(working_on(PRICE_INTENT, ASK_REQUEST)), PRICE, AskQuestion),
+    (lambda: introduced(working_on(PRICE_INTENT, ASK_REQUEST, state=with_chairs(ConversationState()))), PRICE,
+     ConfirmShippingRequest),
+    (lambda: introduced(working_on(ASK_REQUEST, ASK_ORIGIN, state=with_chairs(ConversationState()))), PRICE,
+     PopSatisfiedAsk),
     (lambda: introduced(working_on()), HELLO, Reply),
 ])
 def test_exactly_one_operator_applies_at_each_step(make_state, phrase, expected):
@@ -458,16 +550,16 @@ def test_recognize_intent_stores_the_utterance_stops_listening_and_pushes_the_in
     assert op.can_perform(state, io)
     op.perform(state, io)
     assert state.human_utterance == Utterance(HELLO)
-    assert state.human_intent is GREETING
     assert state.intent_stack == [GREETING] and not state.listening
     assert not op.can_perform(state, io)
 
 
-def test_recognize_intent_pushes_nothing_for_an_unknown_intent():
-    state = ConversationState()
+def test_recognize_intent_pushes_not_understood_for_an_unknown_intent():
+    state = working_on(ASK_DESTINATION)
+    state.listening = True
     RecognizeIntent("recognize_intent").perform(state, RecordingIO(GIBBERISH))
-    assert state.human_utterance == Utterance(GIBBERISH) and state.human_intent is None
-    assert state.intent_stack == []
+    assert state.human_utterance == Utterance(GIBBERISH)
+    assert state.intent_stack == [ASK_DESTINATION, NotUnderstood()]
 
 
 def test_recognize_intent_classifies_over_the_known_intents():
@@ -500,32 +592,66 @@ def test_recognize_intent_waits_until_the_agent_is_listening():
     assert not op.can_perform(working_on(), RecordingIO(GIBBERISH))
 
 
-# --- operators that handle an utterance apply only to its intent
+# --- the top of the stack decides which operator applies
 
 
+# the operator that handles each intent recognized in an utterance, when it is on top
 HANDLERS = {
-    ReactToGreetingIntent: {HumanIntent.GREETING},
-    ReactToAskCapabilitiesIntent: {HumanIntent.ASK_CAPABILITIES},
-    ReactToEstimatePriceIntent: {HumanIntent.ESTIMATE_PRICE},
-    AskForShippingRequest: {HumanIntent.ESTIMATE_PRICE},
-    ReactToShippingRequestIntent: {HumanIntent.SHIPPING_REQUEST},
-    RespondUnknown: {None},
+    ReactToGreetingIntent: HumanIntent.GREETING,
+    ReactToAskCapabilitiesIntent: HumanIntent.ASK_CAPABILITIES,
+    ReactToEstimatePriceIntent: HumanIntent.ESTIMATE_PRICE,
+    ReactToShippingRequestIntent: HumanIntent.SHIPPING_REQUEST,
+    RespondUnknown: NotUnderstood(),
 }
+WORK_OPERATORS = [
+    RespondUnknown, ReactToGreetingIntent, ReactToAskCapabilitiesIntent, ReactToShippingRequestIntent,
+    ConfirmShippingRequest, PopSatisfiedAsk, AskQuestion, ReactToEstimatePriceIntent, PlanDelivery, DescribePlan, Reply,
+]
 
 
 @pytest.mark.parametrize("op_type", list(HANDLERS))
-@pytest.mark.parametrize("intent", [*HumanIntent, None])
-def test_each_handler_applies_only_to_its_intent(op_type, intent):
-    state = working_on()
-    if op_type is ReactToEstimatePriceIntent:
+@pytest.mark.parametrize("intent", [*HumanIntent, NotUnderstood(), ASK_REQUEST, ASK_DESTINATION])
+def test_each_handler_applies_only_with_its_intent_on_top(op_type, intent):
+    state = working_on(intent, state=ConversationState(human_utterance=Utterance(GIBBERISH)))
+    assert op_type("op").can_perform(state, RecordingIO()) == (intent == HANDLERS[op_type])
+
+
+@pytest.mark.parametrize("op_type", list(HANDLERS))
+def test_each_handler_looks_only_at_the_top(op_type):
+    state = working_on(HANDLERS[op_type], GREETING if op_type is not ReactToGreetingIntent else CAPABILITY)
+    assert not op_type("op").can_perform(state, RecordingIO())
+
+
+@pytest.mark.parametrize("op_type", WORK_OPERATORS)
+def test_nothing_but_recognizing_the_intent_applies_while_the_agent_is_listening(op_type):
+    state = with_chairs(working_on(HANDLERS.get(op_type, GREETING)))
+    state.listening = True
+    assert not op_type("op").can_perform(state, RecordingIO())
+
+
+TOPS = [
+    *HumanIntent, NotUnderstood(), ASK_REQUEST, ASK_ORIGIN, ASK_DESTINATION, ASK_SHIPMENT, None,
+]
+REQUESTS = [None, ShippingRequest(), "books from seattle", "chairs"]
+
+
+@pytest.mark.parametrize("top", TOPS)
+@pytest.mark.parametrize("request_", REQUESTS)
+@pytest.mark.parametrize("planned_", [False, True])
+def test_whatever_is_on_top_exactly_one_operator_applies(top, request_, planned_):
+    state = working_on(*([] if top is None else [top]), state=ConversationState(human_utterance=Utterance(SHIPPING)))
+    if request_ == "books from seattle":
+        state.shipping_request = ShippingRequest(
+            origin=Location(name="shipping-origin", city=state.reasoner.find_entity("seattle")),
+            shipment=Shipment(name="shipment", details="box of books", weight=200),
+        )
+    elif request_ == "chairs":
         with_chairs(state)
-    state.human_utterance, state.human_intent = Utterance(GIBBERISH), intent
-    assert op_type("op").can_perform(state, RecordingIO()) == (intent in HANDLERS[op_type])
-
-
-@pytest.mark.parametrize("op_type", list(HANDLERS))
-def test_handlers_wait_for_an_utterance(op_type):
-    assert not op_type("op").can_perform(working_on(GREETING), RecordingIO())
+    else:
+        state.shipping_request = request_
+    # a delivery is planned only for a complete request
+    state.planned = planned_ and request_ == "chairs"
+    assert len([op_type for op_type in WORK_OPERATORS if op_type("op").can_perform(state, RecordingIO())]) == 1
 
 
 @pytest.mark.parametrize("op_type, phrase", [
@@ -540,9 +666,9 @@ def test_small_talk_pops_its_intent_and_leaves_the_rest_of_the_stack(op_type, ph
 # --- respond unknown
 
 
-def test_respond_unknown_notes_an_apology_and_leaves_the_stack():
+def test_respond_unknown_notes_an_apology_pops_not_understood_and_leaves_the_rest_of_the_stack():
     state, note, _ = react(RespondUnknown, GIBBERISH, working_on(GREETING))
-    assert note == "Sorry, I am not designed to respond to that."
+    assert note == RespondUnknown.REPLY == "Sorry, I am not designed to respond to that."
     assert state.intent_stack == [GREETING]
 
 
@@ -563,25 +689,22 @@ def with_chairs(state: ConversationState) -> ConversationState:
 SEATTLE = Location(name="pickup1", city=City(name="seattle", display_name="Seattle"))
 DENVER = Location(name="dropoff1", city=City(name="denver", display_name="Denver"))
 BOOKS = Shipment(name="shipment2", details="box of books", weight=200)
+BOOKS_REQUEST = ShippingRequest(origin=SEATTLE, destination=DENVER, shipment=BOOKS)
+BOOKS_FROM_SEATTLE_REQUEST = ShippingRequest(origin=SEATTLE, shipment=BOOKS)
 
 
-class FakeExtractShippingRequest:
-    """stands in for the ExtractShippingRequest sub-process: returns a canned final state, or None as if it did not
-    finish; records how often it was restarted, the output channels it was linked to, and what it was called with"""
+class FakeShippingRequestFiller:
+    """stands in for the ShippingRequestFiller sub-process: returns a canned final state, or None as if it failed;
+    records how often it was restarted, and what it was called with"""
 
     result: ShippingRequestState | None = None
 
     def __init__(self) -> None:
         self.reinits = 0
-        self.outputs: dict = {}
         self.calls: list[dict] = []
 
-    def reinit(self) -> "FakeExtractShippingRequest":
+    def reinit(self) -> "FakeShippingRequestFiller":
         self.reinits += 1
-        return self
-
-    def set_output_channel(self, key: str, channel) -> "FakeExtractShippingRequest":
-        self.outputs[key] = channel
         return self
 
     def __call__(self, **args) -> ShippingRequestState | None:
@@ -590,55 +713,116 @@ class FakeExtractShippingRequest:
 
 
 @pytest.fixture
-def fake_extraction(monkeypatch):
-    """replaces the ExtractShippingRequest sub-process the operator sets up; returns its class, whose result the test
+def fake_filler(monkeypatch):
+    """replaces the ShippingRequestFiller sub-process the operator sets up; returns its class, whose result the test
     sets"""
-    FakeExtractShippingRequest.result = None
-    monkeypatch.setattr(conductor, "ExtractShippingRequest", FakeExtractShippingRequest)
-    return FakeExtractShippingRequest
+    FakeShippingRequestFiller.result = None
+    monkeypatch.setattr(conductor, "ShippingRequestFiller", FakeShippingRequestFiller)
+    return FakeShippingRequestFiller
 
 
-def test_shipping_request_sets_up_its_sub_process_once():
-    assert isinstance(ReactToShippingRequestIntent("op")._extract_shipping_request, ExtractShippingRequest)
+def filled(request: ShippingRequest, *asks: AskFor) -> ShippingRequestState:
+    """the sub-process's final state: the request, and the asks for what is missing from it"""
+    return ShippingRequestState(request=request, asks=list(asks))
 
 
-def test_shipping_request_runs_a_fresh_sub_process_with_the_humans_utterance_and_the_reasoner(fake_extraction):
-    state = heard(SHIPPING)
-    op, io = ReactToShippingRequestIntent("op"), RecordingIO(SHIPPING)
-    op.perform(state, io)
-    sub_process = op._extract_shipping_request
-    assert sub_process.reinits == 1
-    assert sub_process.calls == [{"utterance": Utterance(SHIPPING), "reasoner": state.reasoner}]
-
-
-def test_shipping_request_takes_the_shipping_request_once_all_of_it_is_populated_and_confirms_it(fake_extraction):
-    fake_extraction.result = ShippingRequestState(origin=SEATTLE, destination=DENVER, shipment=BOOKS)
-    state = heard(SHIPPING, working_on(GREETING))
+def take(state: ConversationState) -> ConversationState:
+    """has a fresh ReactToShippingRequestIntent handle the delivery; checks that it applies, that it pops its intent,
+    and that it neither notes nor says anything, leaving that to the asks; returns the state"""
     op, io = ReactToShippingRequestIntent("op"), RecordingIO(SHIPPING)
     assert op.can_perform(state, io)
     op.perform(state, io)
-    request = state.shipping_request
-    assert (request.origin, request.destination, request.shipment) == (SEATTLE, DENVER, BOOKS)
-    assert state.partial_responses == [BOOKS_CONFIRMATION] and io.said == []
-    assert state.intent_stack == [GREETING] and state.human_utterance is None
+    assert SHIPPING_INTENT not in state.intent_stack and io.said == [] and state.partial_responses == []
+    return state
 
 
-@pytest.mark.parametrize("result", [None, ShippingRequestState(origin=SEATTLE, shipment=BOOKS)])
-def test_shipping_request_keeps_the_shipping_request_and_says_so_when_not_all_of_it_is_populated(
-    fake_extraction, result
+def test_shipping_request_sets_up_its_sub_process_once():
+    assert isinstance(ReactToShippingRequestIntent("op")._shipping_request_filler, ShippingRequestFiller)
+
+
+def test_shipping_request_runs_a_fresh_sub_process_over_a_new_request_when_the_agent_is_not_asking_for_one(
+    fake_filler
 ):
-    fake_extraction.result = result
-    state = ConversationState()
-    before = state.shipping_request
-    state, note, _ = react(ReactToShippingRequestIntent, SHIPPING, state)
-    assert state.shipping_request is before and note == ReactToShippingRequestIntent.NOT_UNDERSTOOD
-    assert state.intent_stack == []
+    fake_filler.result = filled(BOOKS_REQUEST)
+    state = heard(SHIPPING, with_chairs(ConversationState()))
+    state.asked = QUESTION
+    op = ReactToShippingRequestIntent("op")
+    op.perform(state, RecordingIO(SHIPPING))
+    sub_process = op._shipping_request_filler
+    assert sub_process.reinits == 1
+    assert sub_process.calls == [{
+        "utterance": Utterance(SHIPPING), "asked": QUESTION, "reasoner": state.reasoner, "request": ShippingRequest(),
+        "suppress_errors": False,
+    }]
 
 
-def test_a_new_delivery_replaces_the_shipping_request(fake_extraction):
-    fake_extraction.result = ShippingRequestState(origin=SEATTLE, destination=DENVER, shipment=BOOKS)
-    state, note, _ = react(ReactToShippingRequestIntent, SHIPPING, with_chairs(ConversationState()))
-    assert state.shipping_request.shipment == BOOKS and note == BOOKS_CONFIRMATION
+@pytest.mark.parametrize("ask", [ASK_REQUEST, ASK_DESTINATION])
+def test_shipping_request_fills_in_the_request_being_asked_for(fake_filler, ask):
+    fake_filler.result = filled(BOOKS_REQUEST)
+    state = heard(SHIPPING, working_on(ask))
+    state.shipping_request = BOOKS_FROM_SEATTLE_REQUEST
+    op = ReactToShippingRequestIntent("op")
+    op.perform(state, RecordingIO(SHIPPING))
+    [call] = op._shipping_request_filler.calls
+    assert call["request"] is BOOKS_FROM_SEATTLE_REQUEST
+
+
+def test_shipping_request_takes_a_complete_request_and_asks_for_it_so_it_is_confirmed(fake_filler):
+    fake_filler.result = filled(BOOKS_REQUEST)
+    state = take(heard(SHIPPING, working_on(GREETING)))
+    assert state.shipping_request is BOOKS_REQUEST and state.intent_stack == [GREETING, ASK_REQUEST]
+
+
+def test_shipping_request_takes_a_partial_request_and_pushes_the_asks_with_the_first_on_top(fake_filler):
+    fake_filler.result = filled(ShippingRequest(origin=SEATTLE), ASK_DESTINATION, ASK_SHIPMENT)
+    state = take(heard(SHIPPING, working_on(PRICE_INTENT, ASK_REQUEST)))
+    assert state.shipping_request == ShippingRequest(origin=SEATTLE)
+    assert state.intent_stack == [PRICE_INTENT, ASK_REQUEST, ASK_SHIPMENT, ASK_DESTINATION]
+
+
+def test_shipping_request_moves_the_asks_already_on_the_stack_to_the_top(fake_filler):
+    fake_filler.result = filled(ShippingRequest(origin=SEATTLE), ASK_DESTINATION)
+    state = heard(SHIPPING, working_on(ASK_REQUEST, ASK_DESTINATION, GREETING))
+    state.shipping_request = ShippingRequest()
+    assert take(state).intent_stack == [GREETING, ASK_REQUEST, ASK_DESTINATION]
+
+
+def test_a_new_delivery_replaces_the_shipping_request(fake_filler):
+    fake_filler.result = filled(BOOKS_REQUEST)
+    assert take(heard(SHIPPING, with_chairs(ConversationState()))).shipping_request is BOOKS_REQUEST
+
+
+# --- confirming the shipping request
+
+
+def confirm(state: ConversationState) -> str:
+    """has ConfirmShippingRequest confirm the request; checks that it applies, pops its ask, and notes one thing;
+    returns the note"""
+    op, io = ConfirmShippingRequest("op"), RecordingIO()
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert ASK_REQUEST not in state.intent_stack and not io.said
+    [note] = state.partial_responses
+    return note
+
+
+def test_confirm_shipping_request_notes_the_request_and_invites_the_price_question():
+    state = working_on(GREETING, ASK_REQUEST, state=ConversationState(shipping_request=BOOKS_REQUEST))
+    assert confirm(state) == BOOKS_CONFIRMATION and state.intent_stack == [GREETING]
+
+
+def test_confirm_shipping_request_does_not_invite_the_price_question_once_the_human_has_asked_it():
+    state = working_on(PRICE_INTENT, ASK_REQUEST, state=ConversationState(shipping_request=BOOKS_REQUEST))
+    assert confirm(state) == BOOKS_CONFIRMATION.removesuffix(" Ask me what it costs whenever you are ready.")
+    assert state.intent_stack == [PRICE_INTENT]
+
+
+@pytest.mark.parametrize("make_state", [
+    lambda: working_on(ASK_REQUEST, state=ConversationState(shipping_request=BOOKS_FROM_SEATTLE_REQUEST)),
+    lambda: working_on(ASK_REQUEST, ASK_ORIGIN, state=ConversationState(shipping_request=BOOKS_REQUEST)),
+])
+def test_confirm_shipping_request_waits_for_its_ask_on_top_with_the_request_complete(make_state):
+    assert not ConfirmShippingRequest("op").can_perform(make_state(), RecordingIO())
 
 
 def test_a_second_delivery_is_confirmed_and_priced_in_place_of_the_first(chat):
@@ -647,35 +831,115 @@ def test_a_second_delivery_is_confirmed_and_priced_in_place_of_the_first(chat):
     ]
 
 
+# --- asking for what the agent needs
+
+
+def test_an_ask_takes_its_question_from_the_model():
+    assert ASK_REQUEST.question == ShippingRequest.__doc__
+    assert ASK_DESTINATION.question == ShippingRequest.model_fields["destination"].description
+
+
+def test_an_ask_can_only_be_for_an_attribute_of_its_model():
+    with pytest.raises(ValueError):
+        AskFor(ShippingRequest, "weight")
+
+
+@pytest.mark.parametrize("request_, satisfied", [
+    (None, set()),
+    (ShippingRequest(), set()),
+    (BOOKS_FROM_SEATTLE_REQUEST, {ASK_ORIGIN, ASK_SHIPMENT}),
+    (BOOKS_REQUEST, {ASK_REQUEST, ASK_ORIGIN, ASK_DESTINATION, ASK_SHIPMENT}),
+])
+def test_an_ask_is_satisfied_once_the_request_has_its_attribute_or_for_the_whole_request_every_attribute(
+    request_, satisfied
+):
+    asks = {ASK_REQUEST, ASK_ORIGIN, ASK_DESTINATION, ASK_SHIPMENT}
+    assert {ask for ask in asks if ask.satisfied(request_)} == satisfied
+
+
+def test_pop_satisfied_ask_pops_the_asks_for_attributes_on_top_once_they_are_satisfied():
+    state = working_on(PRICE_INTENT, ASK_REQUEST, ASK_ORIGIN, ASK_DESTINATION)
+    state.shipping_request = BOOKS_REQUEST
+    op = PopSatisfiedAsk("op")
+    for remaining in ([PRICE_INTENT, ASK_REQUEST, ASK_ORIGIN], [PRICE_INTENT, ASK_REQUEST]):
+        assert op.can_perform(state, RecordingIO())
+        op.perform(state, RecordingIO())
+        assert state.intent_stack == remaining
+    assert not op.can_perform(state, RecordingIO()), "the ask for the whole request is left to be confirmed"
+
+
+@pytest.mark.parametrize("make_state", [
+    lambda: working_on(ASK_DESTINATION),
+    lambda: working_on(ASK_REQUEST, GREETING, state=with_chairs(ConversationState())),
+])
+def test_pop_satisfied_ask_waits_for_a_satisfied_ask_on_top(make_state):
+    assert not PopSatisfiedAsk("op").can_perform(make_state(), RecordingIO())
+
+
+def test_ask_question_ends_the_turn_with_the_question_and_keeps_the_ask():
+    state, io = working_on(PRICE_INTENT, ASK_REQUEST, ASK_DESTINATION), RecordingIO()
+    state.shipping_request = BOOKS_FROM_SEATTLE_REQUEST
+    state.partial_responses = [ReactToGreetingIntent.REPLY]
+    op = AskQuestion("op")
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert io.said == [f"{ReactToGreetingIntent.REPLY} {DESTINATION_QUESTION}"]
+    assert state.listening and state.asked == DESTINATION_QUESTION and state.partial_responses == []
+    assert state.top == ASK_DESTINATION
+
+
+@pytest.mark.parametrize("make_state", [
+    lambda: working_on(ASK_REQUEST, state=with_chairs(ConversationState())),
+    lambda: working_on(ASK_REQUEST, GREETING),
+])
+def test_ask_question_waits_for_an_unsatisfied_ask_on_top(make_state):
+    assert not AskQuestion("op").can_perform(make_state(), RecordingIO())
+
+
 # --- estimating prices
 
 
 def test_conversation_starts_with_no_shipping_request_and_no_price():
     state = ConversationState()
-    assert state.shipping_request is None and state.plan is None and state.price is None
+    assert state.shipping_request is None and not state.planned and state.plan is None and state.price is None
 
 
-def test_ask_for_shipping_request_notes_what_the_agent_needs_and_pops_its_intent():
-    state, note, _ = react(AskForShippingRequest, PRICE, working_on(GREETING))
-    assert note == AskForShippingRequest.REPLY and state.intent_stack == [GREETING]
-
-
-def test_ask_for_shipping_request_does_not_apply_once_there_is_a_shipping_request():
-    state = heard(PRICE, with_chairs(ConversationState()))
-    assert not AskForShippingRequest("op").can_perform(state, RecordingIO(PRICE))
-
-
-def estimate(state: ConversationState | None = None) -> ConversationState:
-    """has ReactToEstimatePriceIntent handle a price question about the pallet of chairs; checks that it applies, that
-    it handles the utterance without noting or saying anything, and that the intent stays on the stack for
-    DescribePlan"""
-    state = heard(PRICE, with_chairs(state or ConversationState()))
+@pytest.mark.parametrize("request_, asks", [
+    (None, [ASK_REQUEST]),
+    (ShippingRequest(), [ASK_REQUEST, ASK_SHIPMENT, ASK_DESTINATION, ASK_ORIGIN]),
+    (BOOKS_FROM_SEATTLE_REQUEST, [ASK_REQUEST, ASK_DESTINATION]),
+])
+def test_estimate_price_asks_for_the_request_and_its_missing_parts_and_keeps_its_intent_under_them(request_, asks):
+    state = heard(PRICE, working_on(GREETING))
+    state.shipping_request = request_
     op, io = ReactToEstimatePriceIntent("op"), RecordingIO()
     assert op.can_perform(state, io)
     op.perform(state, io)
-    assert state.human_utterance is None and state.human_intent is None
     assert not io.said and not state.partial_responses
-    assert state.top is PRICE_INTENT
+    assert state.intent_stack == [GREETING, PRICE_INTENT, *asks]
+
+
+def test_estimate_price_asked_again_while_the_agent_is_asking_moves_the_asks_back_above_it():
+    state = heard(PRICE, working_on(PRICE_INTENT, ASK_REQUEST, ASK_DESTINATION))
+    state.shipping_request = BOOKS_FROM_SEATTLE_REQUEST
+    ReactToEstimatePriceIntent("op").perform(state, RecordingIO())
+    assert state.intent_stack == [PRICE_INTENT, ASK_REQUEST, ASK_DESTINATION]
+
+
+def test_estimate_price_does_not_ask_once_the_request_is_complete():
+    assert not ReactToEstimatePriceIntent("op").can_perform(heard(PRICE, with_chairs(ConversationState())),
+                                                            RecordingIO())
+
+
+def estimate(state: ConversationState | None = None) -> ConversationState:
+    """has PlanDelivery handle a price question about the pallet of chairs; checks that it applies without noting or
+    saying anything, and that the intent stays on the stack for DescribePlan"""
+    state = heard(PRICE, with_chairs(state or ConversationState()))
+    op, io = PlanDelivery("op"), RecordingIO()
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert not io.said and not state.partial_responses
+    assert state.top is PRICE_INTENT and state.planned
     return state
 
 
@@ -683,13 +947,13 @@ def no_plan():
     raise RuntimeError("Plan not available")
 
 
-def test_estimate_price_records_the_plan_and_its_cost_as_the_price():
+def test_plan_delivery_records_the_plan_and_its_cost_as_the_price():
     state = estimate()
     assert state.price == 802.0 and sum(action.cost for action in state.plan) == state.price
     assert isinstance(state.plan[-1], UnloadAction) and state.plan[-1].location.name == "shipping-destination"
 
 
-def test_estimate_price_leaves_the_world_graph_and_the_planner_as_they_were():
+def test_plan_delivery_leaves_the_world_graph_and_the_planner_as_they_were():
     state = ConversationState()
     before = state.reasoner.world.snapshot
     estimate(state)
@@ -697,7 +961,7 @@ def test_estimate_price_leaves_the_world_graph_and_the_planner_as_they_were():
     assert not state.planner.can_plan()
 
 
-def test_estimate_price_records_no_plan_when_no_delivery_can_be_planned(monkeypatch):
+def test_plan_delivery_records_no_plan_when_no_delivery_can_be_planned(monkeypatch):
     state = ConversationState()
     before = state.reasoner.world.snapshot
     monkeypatch.setattr(state.planner, "plan", no_plan)
@@ -706,12 +970,21 @@ def test_estimate_price_records_no_plan_when_no_delivery_can_be_planned(monkeypa
     assert state.reasoner.world.snapshot == before
 
 
+@pytest.mark.parametrize("make_state", [
+    lambda: working_on(PRICE_INTENT, state=ConversationState(shipping_request=BOOKS_FROM_SEATTLE_REQUEST)),
+    lambda: planned(working_on(PRICE_INTENT, state=with_chairs(ConversationState()))),
+    lambda: working_on(PRICE_INTENT, ASK_REQUEST, state=with_chairs(ConversationState())),
+])
+def test_plan_delivery_waits_for_the_price_question_on_top_with_a_complete_request_not_planned_yet(make_state):
+    assert not PlanDelivery("op").can_perform(make_state(), RecordingIO())
+
+
 def describe(state: ConversationState) -> str:
     """has DescribePlan describe the plan; checks that it applies and notes one thing; returns the note"""
     op, io = DescribePlan("op"), RecordingIO()
     assert op.can_perform(state, io)
     op.perform(state, io)
-    assert not io.said
+    assert not io.said and not state.planned
     [note] = state.partial_responses
     return note
 
@@ -746,8 +1019,10 @@ def test_describe_plan_says_so_when_no_delivery_could_be_planned(monkeypatch):
     assert state.intent_stack == []
 
 
-def test_describe_plan_waits_until_the_price_question_has_been_handled():
+def test_describe_plan_waits_until_the_delivery_has_been_planned():
     assert not DescribePlan("op").can_perform(heard(PRICE), RecordingIO())
+    assert not DescribePlan("op").can_perform(working_on(PRICE_INTENT, state=with_chairs(ConversationState())),
+                                              RecordingIO())
 
 
 # --- ending the turn

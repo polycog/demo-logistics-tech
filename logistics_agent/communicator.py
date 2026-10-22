@@ -66,6 +66,55 @@ class HumanIntent(DocEnum):
     )
 
 
+@dataclass(frozen=True)
+class AgentIntent:
+    """what the logistics support agent wants from the conversation, as opposed to what the human wants; frozen, so two
+    intents with the same parts are equal and the stack holds each once"""
+
+
+@dataclass(frozen=True)
+class NotUnderstood(AgentIntent):
+    """the agent understood the human's last utterance as none of the intents it knows how to handle, and has to say
+    so"""
+
+
+@dataclass(frozen=True)
+class AskFor(AgentIntent):
+    """the agent needs a model it is filling in, or one attribute of it, and asks the human for it
+
+    the question is the model's own: its docstring for the whole model, the attribute's Field description for one
+    attribute
+    """
+
+    # the model being filled in, such as ShippingRequest
+    model: type[BaseModel]
+    # the attribute asked for, such as "destination"; None for the whole model
+    attribute: str | None = None
+
+    def __post_init__(self) -> None:
+        """the attribute must be one of the model's"""
+        if self.attribute is not None and self.attribute not in self.model.model_fields:
+            raise ValueError(f"{self.model.__name__} has no attribute {self.attribute!r}")
+
+    @property
+    def question(self) -> str:
+        """what the agent asks the human"""
+        if self.attribute is None:
+            assert self.model.__doc__ is not None, f"{self.model.__name__} needs a docstring to ask for it"
+            return self.model.__doc__.strip()
+        description = self.model.model_fields[self.attribute].description
+        assert description is not None, f"{self.model.__name__}.{self.attribute} needs a description to ask for it"
+        return description
+
+    def satisfied(self, instance: BaseModel | None) -> bool:
+        """whether the instance being filled in has what is asked for: the attribute, or every attribute of the whole
+        model; never while there is no instance"""
+        if instance is None:
+            return False
+        attributes = self.model.model_fields if self.attribute is None else [self.attribute]
+        return all(getattr(instance, attribute) is not None for attribute in attributes)
+
+
 def label(entity: Entity) -> str:
     """how to refer to an entity in a reply: its display name, or its name with spaces"""
     return getattr(entity, "display_name", entity.name.replace("_", " "))

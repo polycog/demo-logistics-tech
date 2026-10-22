@@ -1,8 +1,11 @@
 """decision process of the logistics support cogent: the conversation state it keeps, and the operators that
 decide what to do with each utterance
 
-the conversation is managed with a stack of intents. The human's intents are pushed as they are recognized, and each
-intent is popped once it is done. What is on top decides what happens next.
+the conversation is managed with a stack of intents: the human's intents, pushed as they are recognized and popped
+once they are done, and the agent's own: the asks for what it needs from the human, pushed when it finds something
+missing and popped once it has it, and the note that it did not understand an utterance. RecognizeIntent only pushes;
+every operator that works on an utterance applies to what is on top of the stack, so the top alone decides what
+happens next.
 
 within one turn, the operators that do the work write partial responses instead of speaking; once the stack is empty,
 the turn ends with one reply that says them
@@ -15,9 +18,11 @@ from typing import Any
 
 from cognition import EnumClassifier, IOContainer, Operator, describe_facts
 
-from logistics_agent.communicator import DEFAULT_LLM, HumanIntent, Utterance
+from pydantic import BaseModel
+
+from logistics_agent.communicator import DEFAULT_LLM, AgentIntent, AskFor, HumanIntent, NotUnderstood, Utterance
 from logistics_agent.domain import Action, At, ShippingRequest
-from logistics_agent.extract_shipping_request import ExtractShippingRequest
+from logistics_agent.fill_shipping_request import ShippingRequestFiller
 from logistics_agent.planner import LogisticsPlanner
 from logistics_agent.reasoner import Reasoner
 
@@ -45,12 +50,11 @@ class ConversationState:
     done: bool = False
     # whether the agent is waiting for the human's next utterance, rather than working on the last one
     listening: bool = True
-    # the utterance being handled, until an operator handles it
+    # the utterance the agent is working on, which the operator for the intent it pushed reads; None while listening
     human_utterance: Utterance | None = None
-    # the intent recognized in human_utterance; None when no known intent matched
-    human_intent: HumanIntent | None = None
-    # what the conversation is about, most recent on top; the top decides what happens next
-    intent_stack: list[HumanIntent] = field(default_factory=list)
+    # what the conversation is about, most recent on top: what the human wants, and what the agent asked for; the top
+    # decides what happens next
+    intent_stack: list[HumanIntent | AgentIntent] = field(default_factory=list)
     # what the agent will say at the end of this turn, ahead of any question
     partial_responses: list[str] = field(default_factory=list)
     # the question the agent ended its last turn with, if any, which the human's next utterance may answer
@@ -60,8 +64,11 @@ class ConversationState:
     reasoner: Reasoner = field(default_factory=Reasoner)
     # plans deliveries over the reasoner's world graph, from its current facts toward its goal
     planner: LogisticsPlanner = field(init=False)
-    # the delivery the human wants priced, as extracted from what they said; None until they have described it
+    # the delivery the human wants priced, as filled in from what they said, with a part None until they have given it;
+    # None until they have described any of it
     shipping_request: ShippingRequest | None = None
+    # whether the delivery has been planned for the price question being answered
+    planned: bool = False
     # the cheapest actions found that deliver the shipping request; None until it has been planned, or when no
     # delivery could be planned
     plan: Sequence[Action] | None = None
@@ -73,38 +80,38 @@ class ConversationState:
         self.planner = LogisticsPlanner(self.reasoner.world)
 
     @property
-    def top(self) -> HumanIntent | None:
+    def top(self) -> HumanIntent | AgentIntent | None:
         """the intent on top of the stack, or None when the stack is empty"""
         return self.intent_stack[-1] if self.intent_stack else None
 
-    def push(self, intent: HumanIntent) -> None:
-        """puts the intent on top of the stack, moving it there if it is already further down"""
+    def push(self, intent: HumanIntent | AgentIntent) -> None:
+        """puts the intent on top of the stack, moving it there if an equal one is already further down"""
         if intent in self.intent_stack:
             self.intent_stack.remove(intent)
         self.intent_stack.append(intent)
 
-    def pop(self, intent: HumanIntent) -> None:
+    def pop(self, intent: HumanIntent | AgentIntent) -> None:
         """removes the intent from the top of the stack once it is done"""
-        assert self.top is intent, f"expected {intent} on top of {self.intent_stack}"
+        assert self.top == intent, f"expected {intent} on top of {self.intent_stack}"
         self.intent_stack.pop()
 
-    def understood(self, intent: HumanIntent) -> bool:
-        """whether there is an utterance still to handle, and the agent understood it as expressing the intent"""
-        return not self.listening and self.human_utterance is not None and self.human_intent is intent
+    def on_top(self, intent: HumanIntent | AgentIntent) -> bool:
+        """whether the agent is working, with the intent on top of the stack"""
+        return not self.listening and self.top == intent
 
-    def not_understood_any(self) -> bool:
-        """whether there is an utterance still to handle, and the agent understood it as none of the intents it knows
-        how to handle"""
-        return not self.listening and self.human_utterance is not None and self.human_intent is None
+    def ask_on_top(self) -> AskFor | None:
+        """the ask on top of the stack while the agent is working, or None when something else is on top"""
+        top = self.top
+        return top if not self.listening and isinstance(top, AskFor) else None
 
-    def in_focus(self, intent: HumanIntent) -> bool:
-        """whether the agent is between utterances, with the intent on top of the stack"""
-        return not self.listening and self.human_utterance is None and self.top is intent
+    def model_of(self, model: type[BaseModel]) -> BaseModel | None:
+        """the instance of the model the agent is filling in, which the asks for the model are satisfied by"""
+        assert model is ShippingRequest, f"the agent does not fill in {model.__name__}"
+        return self.shipping_request
 
-    def handled(self) -> None:
-        """forgets the utterance once it has been handled"""
-        self.human_utterance = None
-        self.human_intent = None
+    def asking_for(self, model: type[BaseModel]) -> bool:
+        """whether the agent has asked for the model, or an attribute of it, and is still waiting for it"""
+        return any(isinstance(intent, AskFor) and intent.model is model for intent in self.intent_stack)
 
     def say(self, io: IOContainer, asking: str | None = None) -> None:
         """ends the turn: says the partial responses, then the question being asked, if any, and starts listening for
@@ -115,9 +122,10 @@ class ConversationState:
         self.listen(asking)
 
     def listen(self, asking: str | None = None) -> None:
-        """starts listening for the human again, after something else has spoken to them; remembers the question they
-        were asked, if any, so the answer can be understood with it"""
+        """starts listening for the human again, after something else has spoken to them, done with the utterance;
+        remembers the question they were asked, if any, so the answer can be understood with it"""
         self.listening = True
+        self.human_utterance = None
         self.asked = asking
 
 
@@ -187,7 +195,7 @@ class RecognizeIntent(Operator[ConversationState]):
     """
     WHEN: the agent is listening, and the human said something other than a quit phrase or an acknowledgement
     THEN: recognize the intent expressed in it, using an EnumClassifier over the known HumanIntents, and push it onto
-          the intent stack
+          the intent stack; push NotUnderstood when no known intent matched
     """
 
     TASK_DESC = (
@@ -212,17 +220,15 @@ class RecognizeIntent(Operator[ConversationState]):
         )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """stores the utterance and its recognized intent (None if no known intent matched), stops listening, and
-        pushes the intent onto the stack"""
+        """stores the utterance, stops listening, and pushes its recognized intent, or NotUnderstood, onto the stack"""
         utterance: Utterance = io.i.interaction
         assert utterance.phrase is not None
         state.listening = False
         state.human_utterance = utterance
-        state.human_intent, _confidence = self._intent_classifier(
+        intent, _confidence = self._intent_classifier(
             in_context(state.asked, utterance.phrase), DEFAULT_LLM, num_trials=1
         )
-        if state.human_intent is not None:
-            state.push(state.human_intent)
+        state.push(NotUnderstood() if intent is None else intent)
 
 
 def in_context(asked: str | None, phrase: str) -> str:
@@ -235,18 +241,20 @@ def in_context(asked: str | None, phrase: str) -> str:
 
 class RespondUnknown(Operator[ConversationState]):
     """
-    WHEN: the human's utterance matches none of the known intents
-    THEN: note that the cogent is not designed to respond to that, and leave the intent stack as it is
+    WHEN: NotUnderstood is on top: the human's utterance matched none of the known intents
+    THEN: note that the cogent is not designed to respond to that, and pop it, leaving the rest of the stack as it is
     """
 
+    REPLY = "Sorry, I am not designed to respond to that."
+
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies when the current utterance was interpreted but no known intent was recognized"""
-        return state.not_understood_any()
+        """applies with NotUnderstood on top"""
+        return state.on_top(NotUnderstood())
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """notes that the cogent cannot respond, and forgets the utterance"""
-        state.partial_responses.append("Sorry, I am not designed to respond to that.")
-        state.handled()
+        """notes that the cogent cannot respond, and pops NotUnderstood"""
+        state.partial_responses.append(self.REPLY)
+        state.pop(NotUnderstood())
 
 
 # === small talk
@@ -254,26 +262,25 @@ class RespondUnknown(Operator[ConversationState]):
 
 class ReactToGreetingIntent(Operator[ConversationState]):
     """
-    WHEN: the human said hello, thanked the agent, or made small talk
+    WHEN: GREETING is on top: the human said hello, thanked the agent, or made small talk
     THEN: note a friendly reply, and pop the intent
     """
 
     REPLY = "Hello! I am happy to help with your deliveries."
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to an utterance that is a greeting or small talk"""
-        return state.understood(HumanIntent.GREETING)
+        """applies with GREETING on top"""
+        return state.on_top(HumanIntent.GREETING)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """notes the reply, and forgets the utterance"""
+        """notes the reply, and pops the intent"""
         state.partial_responses.append(self.REPLY)
         state.pop(HumanIntent.GREETING)
-        state.handled()
 
 
 class ReactToAskCapabilitiesIntent(Operator[ConversationState]):
     """
-    WHEN: the human asked what the agent can do
+    WHEN: ASK_CAPABILITIES is on top: the human asked what the agent can do
     THEN: note what the agent can help with, and pop the intent
     """
 
@@ -282,14 +289,13 @@ class ReactToAskCapabilitiesIntent(Operator[ConversationState]):
     )
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to an utterance asking what the agent can do"""
-        return state.understood(HumanIntent.ASK_CAPABILITIES)
+        """applies with ASK_CAPABILITIES on top"""
+        return state.on_top(HumanIntent.ASK_CAPABILITIES)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """notes what the agent can do, and forgets the utterance"""
+        """notes what the agent can do, and pops the intent"""
         state.partial_responses.append(self.REPLY)
         state.pop(HumanIntent.ASK_CAPABILITIES)
-        state.handled()
 
 
 # === taking shipping requests
@@ -297,93 +303,152 @@ class ReactToAskCapabilitiesIntent(Operator[ConversationState]):
 
 class ReactToShippingRequestIntent(Operator[ConversationState]):
     """
-    WHEN: the human described a delivery they want
-    THEN: hand the utterance to the ExtractShippingRequest sub-process; take the shipping request once the sub-process
-          has populated its origin, destination, and shipment, and confirm it; pop the intent
+    WHEN: SHIPPING_REQUEST is on top: the human described a delivery they want, or part of it
+    THEN: fill in the shipping request from the utterance with the ShippingRequestFiller sub-process: the request being
+          asked for, or else a new one; pop the intent, and ask for the request, with the asks for its missing parts
+          above, so the request is confirmed once they have what they asked for
     """
 
-    NOT_UNDERSTOOD = "Sorry, I did not understand the delivery you described."
-
     def __init__(self, name: str, **kwargs: Any) -> None:
-        """sets up the ExtractShippingRequest sub-process once; it is restarted for every utterance"""
+        """sets up the ShippingRequestFiller sub-process once; it is restarted for every utterance"""
         super().__init__(name, **kwargs)
-        self._extract_shipping_request = ExtractShippingRequest()
+        self._shipping_request_filler = ShippingRequestFiller()
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to an utterance describing a delivery"""
-        return state.understood(HumanIntent.SHIPPING_REQUEST)
+        """applies with SHIPPING_REQUEST on top; it is pushed with the utterance that describes the delivery, and popped
+        before the agent listens again, so the utterance is always the one that pushed it"""
+        return state.on_top(HumanIntent.SHIPPING_REQUEST)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """runs a fresh sub-process with the human's utterance and the reasoner, which its operators read from io.a;
-        takes the shipping request when the sub-process populated all of it and notes a confirmation, and otherwise
-        notes that the delivery was not understood; forgets the utterance"""
-        assert state.human_utterance is not None and state.human_utterance.phrase is not None
-        sub_process = self._extract_shipping_request
+        """takes the request the sub-process fills in, pops the intent, and pushes the asks"""
+        request = state.shipping_request if state.asking_for(ShippingRequest) else None
+        sub_process = self._shipping_request_filler
         sub_process.reinit()
-        result = sub_process(utterance=state.human_utterance, reasoner=state.reasoner)
-        if result is not None and result.origin and result.destination and result.shipment:
-            state.shipping_request = request = ShippingRequest(
-                origin=result.origin, destination=result.destination, shipment=result.shipment
-            )
-            state.partial_responses.append(confirmation(request))
-        else:
-            state.partial_responses.append(self.NOT_UNDERSTOOD)
+        result = sub_process(
+            utterance=state.human_utterance, asked=state.asked, reasoner=state.reasoner,
+            request=request or ShippingRequest(), suppress_errors=False,
+        )
+        assert result is not None and result.request is not None and result.asks is not None
+        state.shipping_request = result.request
         state.pop(HumanIntent.SHIPPING_REQUEST)
-        state.handled()
+        for ask in [AskFor(ShippingRequest), *reversed(result.asks)]:
+            state.push(ask)
 
 
-def confirmation(request: ShippingRequest) -> str:
-    """what the agent says back once it has the whole shipping request"""
+class ConfirmShippingRequest(Operator[ConversationState]):
+    """
+    WHEN: the ask for the whole shipping request is on top, and the request is complete
+    THEN: note what the agent understood the delivery to be, inviting the price question unless the human has already
+          asked it, and pop the ask
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with the satisfied ask for the whole request on top"""
+        return state.on_top(AskFor(ShippingRequest)) and AskFor(ShippingRequest).satisfied(state.shipping_request)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """notes the confirmation, and pops the ask"""
+        assert state.shipping_request is not None
+        priced = HumanIntent.ESTIMATE_PRICE in state.intent_stack
+        state.partial_responses.append(confirmation(state.shipping_request, priced))
+        state.pop(AskFor(ShippingRequest))
+
+
+def confirmation(request: ShippingRequest, priced: bool = False) -> str:
+    """what the agent says back once it has the whole shipping request; it invites the price question unless the
+    human has already asked it"""
     assert request.origin is not None and request.destination is not None and request.shipment is not None
-    return (
+    got_it = (
         f"Got it: the {request.shipment.details} ({request.shipment.weight:,g} lb) from "
-        f"{request.origin.city.display_name} to {request.destination.city.display_name}. "
-        "Ask me what it costs whenever you are ready."
+        f"{request.origin.city.display_name} to {request.destination.city.display_name}."
     )
+    return got_it if priced else f"{got_it} Ask me what it costs whenever you are ready."
+
+
+# === asking for what the agent needs
+
+
+class PopSatisfiedAsk(Operator[ConversationState]):
+    """
+    WHEN: an ask for an attribute is on top, and the agent has what it asked for
+    THEN: pop the ask; the one below it is looked at next, so the ask for the whole model is reached once the asks for
+          its attributes have popped, and its own operator confirms it
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with a satisfied ask for an attribute on top"""
+        ask = state.ask_on_top()
+        return ask is not None and ask.attribute is not None and ask.satisfied(state.model_of(ask.model))
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """pops the ask"""
+        assert state.top is not None
+        state.pop(state.top)
+
+
+class AskQuestion(Operator[ConversationState]):
+    """
+    WHEN: an ask is on top, and the agent does not have what it asked for yet
+    THEN: end the turn by saying the partial responses and the ask's question; the ask stays on the stack until it has
+          what it asked for
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with an unsatisfied ask on top"""
+        ask = state.ask_on_top()
+        return ask is not None and not ask.satisfied(state.model_of(ask.model))
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """says the partial responses and the question, and listens for the answer"""
+        assert isinstance(state.top, AskFor)
+        state.say(io, asking=state.top.question)
 
 
 # === estimating prices
 
 
-class AskForShippingRequest(Operator[ConversationState]):
-    """
-    WHEN: the human asked what a delivery costs, but has not described the delivery yet
-    THEN: note that the agent needs the delivery first, and pop the intent
-    """
-
-    REPLY = (
-        "Tell me about the delivery first: what you are shipping and how much it weighs, and the cities it goes from "
-        "and to."
-    )
-
-    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to an utterance asking for a price while there is no shipping request"""
-        return state.understood(HumanIntent.ESTIMATE_PRICE) and state.shipping_request is None
-
-    def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """notes what the agent needs, and forgets the utterance"""
-        state.partial_responses.append(self.REPLY)
-        state.pop(HumanIntent.ESTIMATE_PRICE)
-        state.handled()
-
-
 class ReactToEstimatePriceIntent(Operator[ConversationState]):
     """
-    WHEN: the human asked what a delivery costs
-    THEN: plan the delivery in the shipping request, from its origin to its destination, and record the plan and its
-          price; the intent stays on the stack until the plan has been described
+    WHEN: ESTIMATE_PRICE is on top: the human asked what a delivery costs, and the shipping request is not complete
+    THEN: ask for the request, and for each part still missing from it, so the price question waits under the asks
+          until they have what they asked for; the intent stays on the stack until the plan has been described
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies to an utterance asking for a price"""
-        return state.understood(HumanIntent.ESTIMATE_PRICE) and state.shipping_request is not None
+        """applies with ESTIMATE_PRICE on top, while the request is not complete"""
+        return state.on_top(HumanIntent.ESTIMATE_PRICE) and not AskFor(ShippingRequest).satisfied(state.shipping_request)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """pushes the ask for the whole request, then the asks for its missing parts, the first of them on top; an ask
+        already on the stack is moved up"""
+        request = state.shipping_request
+        state.push(AskFor(ShippingRequest))
+        if request is not None:
+            for part in reversed(request.missing()):
+                state.push(AskFor(ShippingRequest, part))
+
+
+class PlanDelivery(Operator[ConversationState]):
+    """
+    WHEN: ESTIMATE_PRICE is on top, the shipping request is complete, and the delivery has not been planned yet
+    THEN: plan the delivery in the shipping request, from its origin to its destination, and record the plan and its
+          price
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with ESTIMATE_PRICE on top and a complete request to plan"""
+        return (
+            state.on_top(HumanIntent.ESTIMATE_PRICE)
+            and not state.planned
+            and AskFor(ShippingRequest).satisfied(state.shipping_request)
+        )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """puts the shipping request's locations and shipment in the world graph, plans moving the shipment from the
         origin to the destination, and takes them out again; records the plan and its cost as the price, or None for
-        both when no delivery could be planned; forgets the utterance"""
+        both when no delivery could be planned"""
         request, planner = state.shipping_request, state.planner
-        assert request is not None
+        assert request is not None and request.origin and request.destination and request.shipment
         planner.setup(request.origin, request.destination, request.shipment)
         planner.set_current([At(entity1=request.shipment, entity2=request.origin)])
         planner.set_goal([At(entity1=request.shipment, entity2=request.destination)])
@@ -393,12 +458,12 @@ class ReactToEstimatePriceIntent(Operator[ConversationState]):
             state.plan, state.price = None, None
         finally:
             planner.clear()
-        state.handled()
+        state.planned = True
 
 
 class DescribePlan(Operator[ConversationState]):
     """
-    WHEN: the agent is working on the human's question about what a delivery costs, and has planned the delivery
+    WHEN: ESTIMATE_PRICE is on top, and the delivery has been planned
     THEN: note the price, and a description of the plan's steps written by describe_facts; or note that no delivery
           could be planned; pop the intent
     """
@@ -409,14 +474,14 @@ class DescribePlan(Operator[ConversationState]):
     )
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies between utterances, with the price question on top of the stack"""
-        return state.in_focus(HumanIntent.ESTIMATE_PRICE)
+        """applies with ESTIMATE_PRICE on top, once the delivery has been planned"""
+        return state.on_top(HumanIntent.ESTIMATE_PRICE) and state.planned
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """notes what delivering the shipping request costs, which the agent states itself, and how the shipment
         would be delivered, which the language model describes from the plan's actions"""
         request = state.shipping_request
-        assert request is not None and request.shipment is not None
+        assert request is not None and request.origin and request.destination and request.shipment
         delivery = (
             f"the {request.shipment.details} from {request.origin.city.display_name} to "
             f"{request.destination.city.display_name}"
@@ -426,6 +491,7 @@ class DescribePlan(Operator[ConversationState]):
         else:
             steps = describe_facts(state.plan, self.TASK_DESC, DEFAULT_LLM)
             state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}. \n \n {steps}")
+        state.planned = False
         state.pop(HumanIntent.ESTIMATE_PRICE)
 
 
@@ -434,13 +500,13 @@ class DescribePlan(Operator[ConversationState]):
 
 class Reply(Operator[ConversationState]):
     """
-    WHEN: the utterance has been handled and the intent stack is empty, so there is nothing left to do or ask
+    WHEN: the agent is working and the intent stack is empty, so there is nothing left to do or ask
     THEN: end the turn by saying the partial responses
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies between utterances once the stack is empty"""
-        return not state.listening and state.human_utterance is None and not state.intent_stack
+        """applies once the stack is empty"""
+        return not state.listening and not state.intent_stack
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """says the partial responses"""

@@ -9,10 +9,13 @@ from logistics_agent.communicator import Utterance
 from logistics_agent.console import Console
 from logistics_agent.conductor import (
     Acknowledge,
-    AskForShippingRequest,
+    AskQuestion,
+    ConfirmShippingRequest,
     ConversationState,
     DescribePlan,
     Introduce,
+    PlanDelivery,
+    PopSatisfiedAsk,
     ReactToAskCapabilitiesIntent,
     ReactToEstimatePriceIntent,
     ReactToGreetingIntent,
@@ -25,7 +28,7 @@ from logistics_agent.conductor import (
 from logistics_agent.trace import Step, trace
 
 # how the reasoning steps name each decision process, by its type's name
-PROCESS_LABELS = {"DecisionProcess": "conductor", "ExtractShippingRequest": "extract_shipping_request"}
+PROCESS_LABELS = {"DecisionProcess": "conductor", "ShippingRequestFiller": "fill_shipping_request"}
 # the decision process the planner searches with, whose steps are counted on the spinner instead of shown one by one
 SEARCH_PROCESS = "BaseDecisionProcess"
 
@@ -105,10 +108,14 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     dp.add_operator(ReactToAskCapabilitiesIntent("react_to_ask_capabilities_intent"))
     # taking shipping requests
     dp.add_operator(ReactToShippingRequestIntent("react_to_shipping_request_intent"))
+    dp.add_operator(ConfirmShippingRequest("confirm_shipping_request"))
     # estimating prices
-    dp.add_operator(AskForShippingRequest("ask_for_shipping_request"))
     dp.add_operator(ReactToEstimatePriceIntent("react_to_estimate_price_intent"))
+    dp.add_operator(PlanDelivery("plan_delivery"))
     dp.add_operator(DescribePlan("describe_plan"))
+    # asking for what the agent needs, which ends the turn with a question
+    dp.add_operator(PopSatisfiedAsk("pop_satisfied_ask"))
+    dp.add_operator(AskQuestion("ask_question", terminal=True))
     # ending the turn once the stack is empty
     dp.add_operator(Reply("reply", terminal=True))
     return dp, state

@@ -31,9 +31,12 @@ with a step-by-step estimate. The language model understands your request, but i
 finds the plan and its cost, and the language model only words the plan, so the description of the steps varies from
 run to run.
 
-> **Work in progress:** the human describes the whole delivery in one go: what is shipped, how much it weighs, and
-> the cities it goes from and to. The agent does not yet ask for a part that is missing; a new delivery described
-> later replaces the earlier one.
+You don't have to describe the whole delivery at once. When a part is missing (what is shipped and how much it
+weighs, or a city it goes from or to), the agent asks for it, and keeps asking until it has the whole delivery. If
+you ask for a price first, it asks for the delivery and then answers the price question.
+
+> **Work in progress:** a delivery described while the agent is not asking for one replaces the earlier one, so
+> "make it Boston instead" starts a new delivery rather than changing the destination.
 
 ## Quick start
 
@@ -62,12 +65,14 @@ you › I need to ship a pallet of office chairs, 800 pounds, from Seattle to Sa
   · conductor: recognize_intent
     · llm: classify HumanIntent
   · conductor: react_to_shipping_request_intent
-    · extract_shipping_request: extract_origin
+    · fill_shipping_request: take_request
+    · fill_shipping_request: extract_origin
       · llm: populate Place
-    · extract_shipping_request: extract_destination
+    · fill_shipping_request: extract_destination
       · llm: populate Place
-    · extract_shipping_request: extract_shipment
+    · fill_shipping_request: extract_shipment
       · llm: populate Shipment
+    · fill_shipping_request: compose_asks
   · conductor: reply
 agent › Got it: the pallet of office chairs (800 lb) from Seattle to San Francisco. Ask me what it costs whenever you are ready.
 ```
@@ -154,15 +159,31 @@ CITATION.cff       how to cite this repository
 | `conductor.py` | The decision process: the conversation state and one operator per thing the agent can do. |
 | `console.py` | How the conversation looks in the terminal, drawn with Rich: the replies and the thin lines between them, the prompt, the spinner, and the reasoning steps. |
 | `trace.py` | Reports, for `--trace`, which operator each decision process applies, when the planner searches, and where a language model is used. |
-| `extract_shipping_request.py` | The sub-process that extracts a shipping request from what the human says: the cities it goes from and to, which can only be cities the carrier serves, and the shipment. |
-| `communicator.py` | Language understanding: the intents, the models the LLM fills in, and the LLM configuration. |
+| `fill_shipping_request.py` | The sub-process that fills in a shipping request from what the human says: the cities it goes from and to, which can only be cities the carrier serves, and the shipment. It returns the request and an ask for each part still missing. |
+| `communicator.py` | Language understanding: the human's intents, the agent's asks, and the LLM configuration. |
 | `reasoner.py` | Builds and maintains the world graph, and answers queries and updates against it. |
 | `planner.py` | The search planner: what each action does to the world, and the search for the cheapest plan. |
 | `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles, shipments, routes, costs, actions, and the shipping query (a shipment, the terminal it is sent from, and the terminal it goes to). |
 
 The conductor manages the conversation with a **stack of intents**. Every turn, it recognizes the human's intent
-with an `EnumClassifier` and pushes it onto the stack; the intent on top decides what happens next.
-The intents live in `communicator.py` as `HumanIntent`, what the human wants. Each intent is popped once it is done.
+with an `EnumClassifier` and pushes it onto the stack. Recognizing only pushes: every other operator applies to what
+is on top of the stack, so the top alone decides what happens next.
+The stack holds two kinds of intents, both in `communicator.py`:
+
+- `HumanIntent`, what the human wants, such as a price estimate. It is popped once it is done.
+- `AgentIntent`, what the agent wants. `NotUnderstood` is pushed when the utterance matches no known intent, so the
+  agent says it cannot respond to that. `AskFor` is another: an ask for a model being filled in, or for one attribute of
+  it. Its question comes from the model itself: the docstring for the whole model, or the attribute's `Field`
+  description. An ask is popped once the model has what it asks for, not when the human answers. So answering the
+  last missing attribute pops that attribute's ask, and then the ask for the whole model under it.
+
+For example, asking for a price before describing the delivery, then leaving out the destination:
+
+| The human says | Stack afterwards (top on the right) |
+| --- | --- |
+| "how much will it cost?" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)` |
+| "200 pounds of books from Seattle" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)`, `AskFor(ShippingRequest, "destination")` |
+| "Denver" | both asks pop, the delivery is planned and priced, and `ESTIMATE_PRICE` pops: empty |
 
 The language model never decides facts or prices — it only translates between the human and the graph.
 

@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from logistics_agent.domain import (
     AirRoute, Airplane, Airport, At, City, DriveLocalAction, DriveLongDistanceAction, FlyAction, GasPrice, LaborCost, LoadAction, Terminal,
-    Location, Shipment, ShippingQuery, ShippingRequest, Truck, TruckRoute, UnloadAction,
+    Location, Shipment, ShippingRequest, Truck, TruckRoute, UnloadAction,
 )
 from logistics_agent.reasoner import Reasoner
 from logistics_agent.planner import (
@@ -408,30 +408,6 @@ def test_planner_satisfies_every_goal_fact():
 
 def test_the_starting_world_has_no_shipments(starting_world):
     assert not list(starting_world.snapshot.by(Shipment))
-
-
-def test_a_shipping_query_names_an_origin_terminal_a_destination_terminal_and_a_shipment():
-    reasoner = Reasoner()
-    seattle, denver = reasoner.find_entity("terminal_seattle"), reasoner.find_entity("terminal_denver")
-    crate = reasoner.find_entity("shipment1")
-    query = ShippingQuery(origin=seattle, destination=denver, shipment=crate)
-    assert (query.origin.name, query.destination.name, query.shipment.name) == ("terminal_seattle", "terminal_denver", "shipment1")
-
-
-def test_a_shipping_query_needs_another_terminal_as_its_destination():
-    reasoner = Reasoner()
-    seattle = reasoner.find_entity("terminal_seattle")
-    with pytest.raises(ValidationError, match="another terminal than the origin"):
-        ShippingQuery(origin=seattle, destination=seattle, shipment=reasoner.find_entity("shipment1"))
-
-
-@pytest.mark.parametrize("field, name", [("origin", "SEA"), ("destination", "SFO"), ("shipment", "truck1")])
-def test_a_shipping_query_takes_only_terminals_and_a_shipment(field, name):
-    reasoner = Reasoner()
-    parts = {"origin": reasoner.find_entity("terminal_seattle"), "destination": reasoner.find_entity("terminal_denver"),
-             "shipment": reasoner.find_entity("shipment1")}
-    with pytest.raises(ValidationError):
-        ShippingQuery(**{**parts, field: reasoner.find_entity(name)})
 
 
 def test_terminals_and_airports_are_locations_with_a_city(starting_world):

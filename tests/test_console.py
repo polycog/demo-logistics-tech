@@ -51,9 +51,9 @@ def test_plain_output_shows_each_reply_on_one_line_after_its_label():
     console = Console(out, width=20)
     console.show_reply(PLAN.replace("\n", " "))
     console.show_note("(type 'quit' to stop)")
-    console.show_step(1, "extract_shipping_request", "extract_origin")
+    console.show_step(1, "fill_shipping_request", "extract_origin")
     assert out.getvalue() == (
-        f"{AGENT_PREFIX}{PLAN.replace(chr(10), ' ')}\n(type 'quit' to stop)\n    · extract_shipping_request: extract_origin\n"
+        f"{AGENT_PREFIX}{PLAN.replace(chr(10), ' ')}\n(type 'quit' to stop)\n    · fill_shipping_request: extract_origin\n"
     )
 
 
@@ -135,10 +135,10 @@ def test_conductor_planner_and_language_model_steps_each_have_their_own_color():
 def test_a_step_keeps_the_spinner_and_is_shown_indented():
     console, out = styled()
     console.start_thinking()
-    console.show_step(1, "extract_shipping_request", "extract_origin")
+    console.show_step(1, "fill_shipping_request", "extract_origin")
     assert console._status is not None
     console.stop_thinking()
-    assert "    · extract_shipping_request: extract_origin" in out.getvalue()
+    assert "    · fill_shipping_request: extract_origin" in out.getvalue()
 
 
 def test_progress_is_shown_beside_the_spinner_and_a_step_puts_it_back_to_thinking():

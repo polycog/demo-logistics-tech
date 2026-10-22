@@ -1,5 +1,5 @@
 from cognition import Entity, BinaryRelation
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 class City(Entity):
     """city in the logistics network; each city has one terminal and one airport, and truck routes connect cities"""
@@ -103,25 +103,13 @@ class LaborCost(Entity):
     city: City
 
 
-class ShippingQuery(BaseModel):
-    """what a human wants to know the price of: moving a shipment from one terminal to another"""
-    origin: Terminal = Field(description="terminal the shipment is sent from")
-    destination: Terminal = Field(description="terminal the shipment is delivered to, another terminal than the origin")
-    shipment: Shipment = Field(description="shipment being sent")
-
-    @model_validator(mode="after")
-    def destination_is_another_terminal(self) -> "ShippingQuery":
-        """a shipment cannot be sent to the terminal it starts at"""
-        if self.destination == self.origin:
-            raise ValueError(f"the destination must be another terminal than the origin, {self.origin.name}")
-        return self
-
-
+# the docstring and the field descriptions are the questions the agent asks the human to fill in the request: the
+# docstring for the whole request, each description for its part; a part is None until it is known
 class ShippingRequest(BaseModel):
-    """a request to move a shipment from one location to another; a part is None until it is known"""
-    origin: Location | None = Field(default=None, description="location the shipment is sent from")
-    destination: Location | None = Field(default=None, description="location the shipment is delivered to")
-    shipment: Shipment | None = Field(default=None, description="shipment being sent")
+    """What are you shipping, how much does it weigh, and which cities is it going from and to?"""
+    origin: Location | None = Field(default=None, description="Which city is the shipment picked up from?")
+    destination: Location | None = Field(default=None, description="Which city is the shipment going to?")
+    shipment: Shipment | None = Field(default=None, description="What are you shipping, and how much does it weigh?")
 
     def missing(self) -> list[str]:
         """the names of the parts not known yet, in the order origin, destination, shipment"""
