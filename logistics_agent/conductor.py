@@ -3,7 +3,8 @@ decide what to do with each utterance
 
 the conversation is managed with a stack of intents: the human's intents, pushed as they are recognized and popped
 once they are done, and the agent's own: the asks for what it needs from the human, pushed when it finds something
-missing and popped once it has it, and the note that it did not understand an utterance. RecognizeIntent only pushes;
+missing and popped once it has it, the question whether to go ahead with adding a vehicle to the fleet, and the note
+that it did not understand an utterance. RecognizeIntent only pushes;
 every operator that works on an utterance applies to what is on top of the stack, so the top alone decides what
 happens next.
 
@@ -20,9 +21,15 @@ from cognition import EnumClassifier, IOContainer, Operator, describe_facts
 
 from pydantic import BaseModel
 
-from logistics_agent.communicator import DEFAULT_LLM, AgentIntent, AskFor, HumanIntent, NotUnderstood, Utterance
-from logistics_agent.domain import Action, At, ShippingRequest
+from logistics_agent.communicator import (
+    DEFAULT_LLM, AgentIntent, AskFor, AskForKind, ConfirmAddition, HumanIntent, NotUnderstood, Utterance, in_context,
+    label,
+)
+from logistics_agent.domain import Action, At, ShippingRequest, Vehicle
+from logistics_agent.drafts import build, draft_model, drafted
+from logistics_agent.fill_placement import PlacementFiller
 from logistics_agent.fill_shipping_request import ShippingRequestFiller
+from logistics_agent.fill_vehicle import VehicleFiller
 from logistics_agent.planner import LogisticsPlanner
 from logistics_agent.reasoner import Reasoner
 
@@ -74,6 +81,10 @@ class ConversationState:
     plan: Sequence[Action] | None = None
     # what delivering the shipping request costs, in US dollars: the cost of the plan; None whenever plan is None
     price: float | None = None
+    # the draft of the vehicle the human is adding to the fleet; None until the kind of vehicle is known
+    vehicle_draft: BaseModel | None = None
+    # the draft of where that vehicle is, an At relation with the vehicle as entity1; None until the vehicle is complete
+    placement_draft: BaseModel | None = None
 
     def __post_init__(self) -> None:
         """the planner plans over the world graph the reasoner maintains"""
@@ -99,21 +110,46 @@ class ConversationState:
         """whether the agent is working, with the intent on top of the stack"""
         return not self.listening and self.top == intent
 
-    def ask_on_top(self) -> AskFor | None:
+    def ask_on_top(self) -> AskFor | AskForKind | None:
         """the ask on top of the stack while the agent is working, or None when something else is on top"""
         top = self.top
-        return top if not self.listening and isinstance(top, AskFor) else None
+        return top if not self.listening and isinstance(top, AskFor | AskForKind) else None
+
+    def has(self, ask: AskFor | AskForKind) -> bool:
+        """whether the agent has what the ask asks for: the kind of vehicle once there is a draft of one, and
+        otherwise what the model being filled in, or its draft, has"""
+        if isinstance(ask, AskForKind):
+            return self.vehicle_draft is not None
+        return ask.satisfied(self.model_of(ask.model))
 
     def model_of(self, model: type[BaseModel]) -> BaseModel | None:
-        """the instance of the model the agent is filling in, which the asks for the model are satisfied by"""
-        assert model is ShippingRequest, f"the agent does not fill in {model.__name__}"
-        return self.shipping_request
+        """the instance of the model the agent is filling in, or its draft, which the asks for the model are satisfied
+        by"""
+        if model is ShippingRequest:
+            return self.shipping_request
+        if model is At:
+            return self.placement_draft
+        assert issubclass(model, Vehicle), f"the agent does not fill in {model.__name__}"
+        draft = self.vehicle_draft
+        return draft if draft is not None and drafted(draft) is model else None
 
-    def answered_ask(self) -> AskFor | None:
+    def asking_for_vehicle(self) -> bool:
+        """whether the agent has asked for the kind of vehicle to add to the fleet, or the vehicle, and is still waiting
+        for it"""
+        return any(
+            isinstance(intent, AskForKind) or (isinstance(intent, AskFor) and issubclass(intent.model, Vehicle))
+            for intent in self.intent_stack
+        )
+
+    def confirming(self) -> bool:
+        """whether the agent has asked the human to confirm adding a vehicle, and is waiting for the answer"""
+        return isinstance(self.top, ConfirmAddition)
+
+    def answered_ask(self) -> AskFor | AskForKind | None:
         """the ask the utterance answers: the agent ends a turn with a question only with its ask on top, so the ask
         right under the intent the utterance pushed is the one it answers; None when no ask is there"""
         below_top = self.intent_stack[-2] if len(self.intent_stack) >= 2 else None
-        return below_top if isinstance(below_top, AskFor) else None
+        return below_top if isinstance(below_top, AskFor | AskForKind) else None
 
     def asking_for(self, model: type[BaseModel]) -> bool:
         """whether the agent has asked for the model, or an attribute of it, and is still waiting for it"""
@@ -177,7 +213,8 @@ def is_acknowledgement(phrase: str) -> bool:
 
 class Acknowledge(Operator[ConversationState]):
     """
-    WHEN: the agent is listening, and the human's utterance only acknowledges it, such as "thanks" or "ok"
+    WHEN: the agent is listening, and the human's utterance only acknowledges it, such as "thanks" or "ok", but not
+          while the agent waits for a yes or no to adding a vehicle, where "ok" means yes
     THEN: reply to thanks, asking again the question the agent last asked, if any; say nothing to anything else, and
           keep waiting for the human
     """
@@ -185,7 +222,12 @@ class Acknowledge(Operator[ConversationState]):
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
         """applies to an acknowledgement while the agent is listening"""
         utterance: Utterance = io.i.interaction
-        return state.listening and utterance.phrase is not None and is_acknowledgement(utterance.phrase)
+        return (
+            state.listening
+            and not state.confirming()
+            and utterance.phrase is not None
+            and is_acknowledgement(utterance.phrase)
+        )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """replies "You're welcome." to thanks, repeating the pending question so the conversation picks up where it
@@ -199,7 +241,8 @@ class Acknowledge(Operator[ConversationState]):
 
 class RecognizeIntent(Operator[ConversationState]):
     """
-    WHEN: the agent is listening, and the human said something other than a quit phrase or an acknowledgement
+    WHEN: the agent is listening, and the human said something other than a quit phrase or an acknowledgement; an
+          acknowledgement too while the agent waits for a yes or no to adding a vehicle
     THEN: recognize the intent expressed in it, using an EnumClassifier over the known HumanIntents, and push it onto
           the intent stack; push NotUnderstood when no known intent matched
     """
@@ -222,7 +265,7 @@ class RecognizeIntent(Operator[ConversationState]):
             state.listening
             and utterance.phrase is not None
             and QUIT_PATTERN.search(utterance.phrase) is None
-            and not is_acknowledgement(utterance.phrase)
+            and (state.confirming() or not is_acknowledgement(utterance.phrase))
         )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
@@ -235,14 +278,6 @@ class RecognizeIntent(Operator[ConversationState]):
             in_context(state.asked, utterance.phrase), DEFAULT_LLM, num_trials=1
         )
         state.push(NotUnderstood() if intent is None else intent)
-
-
-def in_context(asked: str | None, phrase: str) -> str:
-    """the phrase as the intent classifier should see it: after the agent asked a question, a short answer such as
-    "denver" is classified together with that question"""
-    if asked is None:
-        return phrase
-    return f'the agent asked: "{asked}" and the human answered: "{phrase}"'
 
 
 class RespondUnknown(Operator[ConversationState]):
@@ -377,15 +412,16 @@ def confirmation(request: ShippingRequest, priced: bool = False) -> str:
 
 class PopSatisfiedAsk(Operator[ConversationState]):
     """
-    WHEN: an ask for an attribute is on top, and the agent has what it asked for
+    WHEN: an ask for an attribute, or for the kind of vehicle, is on top, and the agent has what it asked for
     THEN: pop the ask; the one below it is looked at next, so the ask for the whole model is reached once the asks for
-          its attributes have popped, and its own operator confirms it
+          its attributes have popped, and the operator for that model takes it from there: ConfirmShippingRequest,
+          PlaceVehicle, or ProposeAddition
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
         """applies with a satisfied ask for an attribute on top"""
         ask = state.ask_on_top()
-        return ask is not None and ask.attribute is not None and ask.satisfied(state.model_of(ask.model))
+        return ask is not None and (isinstance(ask, AskForKind) or ask.attribute is not None) and state.has(ask)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """pops the ask"""
@@ -403,12 +439,189 @@ class AskQuestion(Operator[ConversationState]):
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
         """applies with an unsatisfied ask on top"""
         ask = state.ask_on_top()
-        return ask is not None and not ask.satisfied(state.model_of(ask.model))
+        return ask is not None and not state.has(ask)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """says the partial responses and the question, and listens for the answer"""
-        assert isinstance(state.top, AskFor)
+        assert isinstance(state.top, AskFor | AskForKind)
         state.say(io, asking=state.top.question)
+
+
+# === adding vehicles to the fleet
+
+
+class ReactToAddToFleetIntent(Operator[ConversationState]):
+    """
+    WHEN: ADD_TO_FLEET is on top: the human wants to add a vehicle to the fleet, or describes the one being added
+    THEN: when the utterance answers where the vehicle is, fill in its At relation with the PlacementFiller
+          sub-process; otherwise fill in the vehicle with the VehicleFiller sub-process: the one being asked for, or
+          else a new one; pop the intent, and ask for the vehicle or its placement, with the asks for what is missing
+          above
+    """
+
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        """sets up both sub-processes once; each is restarted for every utterance it handles"""
+        super().__init__(name, **kwargs)
+        self._vehicle_filler = VehicleFiller()
+        self._placement_filler = PlacementFiller()
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with ADD_TO_FLEET on top"""
+        return state.on_top(HumanIntent.ADD_TO_FLEET)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """runs the sub-process the utterance is for, takes the draft it returns, pops the intent, and pushes the
+        asks so the first is on top"""
+        answering = state.answered_ask()
+        state.pop(HumanIntent.ADD_TO_FLEET)
+        if isinstance(answering, AskFor) and answering.model is At and state.placement_draft is not None:
+            result = self._fill(self._placement_filler, state, answering, state.placement_draft)
+            state.placement_draft = result.draft
+            asks = [AskFor(At), *reversed(result.asks)]
+        else:
+            if not state.asking_for_vehicle():
+                forget_fleet_addition(state)
+            result = self._fill(self._vehicle_filler, state, answering, state.vehicle_draft)
+            state.vehicle_draft = result.draft
+            whole = [] if result.draft is None else [AskFor(drafted(result.draft))]
+            asks = [*whole, *reversed(result.asks)]
+        for ask in asks:
+            state.push(ask)
+
+    @staticmethod
+    def _fill(
+        sub_process: Any, state: ConversationState, answering: AskFor | AskForKind | None, draft: BaseModel | None
+    ) -> Any:
+        """runs a fresh sub-process over the utterance and the draft; returns its final state"""
+        sub_process.reinit()
+        result = sub_process(
+            utterance=state.human_utterance, answering=answering, reasoner=state.reasoner, draft=draft,
+            suppress_errors=False,
+        )
+        assert result is not None and result.asks is not None
+        return result
+
+
+def forget_fleet_addition(state: ConversationState) -> None:
+    """drops the vehicle being added to the fleet and where it is, with every ask for them still on the stack"""
+    state.intent_stack = [
+        intent for intent in state.intent_stack
+        if not isinstance(intent, ConfirmAddition | AskForKind)
+        and not (isinstance(intent, AskFor) and (intent.model is At or issubclass(intent.model, Vehicle)))
+    ]
+    state.vehicle_draft = state.placement_draft = None
+
+
+class PlaceVehicle(Operator[ConversationState]):
+    """
+    WHEN: the ask for the whole vehicle being added is on top, and the vehicle is complete
+    THEN: build the vehicle, start a draft of where it is, an At relation with the vehicle as entity1, and pop the ask;
+          ask where the vehicle is
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with the satisfied ask for a whole fleet vehicle on top"""
+        ask = state.ask_on_top()
+        return (
+            isinstance(ask, AskFor) and ask.attribute is None and issubclass(ask.model, Vehicle) and state.has(ask)
+        )
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """builds the vehicle, and asks for its placement"""
+        assert state.vehicle_draft is not None and state.top is not None
+        state.placement_draft = draft_model(At)(entity1=build(state.vehicle_draft))
+        state.pop(state.top)
+        state.push(AskFor(At))
+        state.push(AskFor(At, "entity2"))
+
+
+class ProposeAddition(Operator[ConversationState]):
+    """
+    WHEN: the ask for the whole placement of the vehicle being added is on top, and it is complete
+    THEN: pop the ask, and ask the human to confirm adding the vehicle there
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with the satisfied ask for the whole placement on top"""
+        return state.on_top(AskFor(At)) and AskFor(At).satisfied(state.placement_draft)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """swaps the ask for the placement for the confirmation"""
+        state.pop(AskFor(At))
+        state.push(ConfirmAddition())
+
+
+def addition(state: ConversationState) -> tuple[Vehicle, Any]:
+    """the vehicle being added to the fleet, and where it is"""
+    assert state.placement_draft is not None
+    placement = build(state.placement_draft)
+    return placement.entity1, placement.entity2
+
+
+class AskToConfirmAddition(Operator[ConversationState]):
+    """
+    WHEN: ConfirmAddition is on top: the agent has the vehicle to add and where it is, and the human has not answered
+          whether to add it
+    THEN: end the turn by saying the partial responses and asking whether to add the vehicle there; ConfirmAddition
+          stays on the stack until the human says yes or no
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with ConfirmAddition on top"""
+        return state.on_top(ConfirmAddition())
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """says the partial responses and the question, and listens for the answer"""
+        vehicle, place = addition(state)
+        state.say(io, asking=(
+            f"Shall I add {vehicle.display_name}, a {vehicle.model} {type(vehicle).__name__.lower()} that carries up "
+            f"to {vehicle.max_payload:,g} lb, at {label(place)}, to the fleet?"
+        ))
+
+
+class ReactToConfirmIntent(Operator[ConversationState]):
+    """
+    WHEN: CONFIRM is on top: the human said yes
+    THEN: pop it; when the agent asked whether to add a vehicle, add it to the world graph where it is, note that it
+          was added, and pop ConfirmAddition; a yes to nothing is let go
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with CONFIRM on top"""
+        return state.on_top(HumanIntent.CONFIRM)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """adds the vehicle when there is one to confirm"""
+        state.pop(HumanIntent.CONFIRM)
+        if not state.confirming():
+            return
+        vehicle, place = addition(state)
+        state.reasoner.add_entity(vehicle, location=place.name)
+        state.partial_responses.append(f"Added {vehicle.display_name} to the fleet, at {label(place)}.")
+        state.pop(ConfirmAddition())
+        forget_fleet_addition(state)
+
+
+class ReactToDenyIntent(Operator[ConversationState]):
+    """
+    WHEN: DENY is on top: the human said no
+    THEN: pop it; when the agent asked whether to add a vehicle, drop the vehicle, note that it was not added, and pop
+          ConfirmAddition; a no to nothing is let go
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with DENY on top"""
+        return state.on_top(HumanIntent.DENY)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """drops the vehicle when there is one to confirm"""
+        state.pop(HumanIntent.DENY)
+        if not state.confirming():
+            return
+        vehicle, _ = addition(state)
+        state.partial_responses.append(f"OK, I did not add {vehicle.display_name} to the fleet.")
+        state.pop(ConfirmAddition())
+        forget_fleet_addition(state)
 
 
 # === estimating prices

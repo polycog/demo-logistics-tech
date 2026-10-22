@@ -11,7 +11,7 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from logistics_agent.domain import Airplane, Airport, City, GasPrice, LaborCost, Terminal, Shipment, Truck
+from logistics_agent.domain import Airplane, Airport, City, GasPrice, LaborCost, Terminal, Shipment, Truck, VehicleType
 
 # the config lives at the root of the repository, next to pyproject.toml
 LLM_CONFIG = Path(__file__).resolve().parent.parent / "llm_config.toml"
@@ -64,6 +64,19 @@ class HumanIntent(DocEnum):
         "greeting",
         "human says hello, thanks the agent, or makes small talk",
     )
+    ADD_TO_FLEET = (
+        "add_to_fleet",
+        "human wants to add a vehicle, such as a truck or an airplane, to the carrier's fleet, or describes the "
+        "vehicle being added: what kind it is, its name, make and model, payload, registration, or where it is",
+    )
+    CONFIRM = (
+        "confirm",
+        "human says yes, agrees, or tells the agent to go ahead",
+    )
+    DENY = (
+        "deny",
+        "human says no, declines, or tells the agent not to go ahead",
+    )
 
 
 @dataclass(frozen=True)
@@ -76,6 +89,24 @@ class AgentIntent:
 class NotUnderstood(AgentIntent):
     """the agent understood the human's last utterance as none of the intents it knows how to handle, and has to say
     so"""
+
+
+@dataclass(frozen=True)
+class ConfirmAddition(AgentIntent):
+    """the agent has the vehicle to add to the fleet and where it is, and asks the human to confirm before it adds
+    it; the human's yes or no answers it"""
+
+
+@dataclass(frozen=True)
+class AskForKind(AgentIntent):
+    """the agent asks which kind of vehicle the human wants to add to the fleet; the question is VehicleType's own
+    docstring, and the ask is satisfied once the agent has a vehicle of a kind to fill in"""
+
+    @property
+    def question(self) -> str:
+        """what the agent asks the human"""
+        assert VehicleType.__doc__ is not None
+        return VehicleType.__doc__.strip()
 
 
 @dataclass(frozen=True)
@@ -134,6 +165,14 @@ def known_entities(world: WorldGraph) -> list[str]:
     lines += [f"gas price {g.name}" for g in snapshot.by(GasPrice)]
     lines += [f"labor cost {c.name}: labor cost in {c.city.name}" for c in snapshot.by(LaborCost)]
     return lines
+
+
+def in_context(asked: str | None, phrase: str) -> str:
+    """the phrase as a classifier should see it: after the agent asked a question, a short answer such as "denver" is
+    classified together with that question"""
+    if asked is None:
+        return phrase
+    return f'the agent asked: "{asked}" and the human answered: "{phrase}"'
 
 
 def asked_context(asked: str | None) -> list[str]:

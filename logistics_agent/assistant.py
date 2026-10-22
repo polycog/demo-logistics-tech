@@ -10,13 +10,19 @@ from logistics_agent.console import Console
 from logistics_agent.conductor import (
     Acknowledge,
     AskQuestion,
+    AskToConfirmAddition,
     ConfirmShippingRequest,
     ConversationState,
     DescribePlan,
     Introduce,
+    PlaceVehicle,
     PlanDelivery,
     PopSatisfiedAsk,
+    ProposeAddition,
+    ReactToAddToFleetIntent,
     ReactToAskCapabilitiesIntent,
+    ReactToConfirmIntent,
+    ReactToDenyIntent,
     ReactToEstimatePriceIntent,
     ReactToGreetingIntent,
     ReactToShippingRequestIntent,
@@ -28,7 +34,12 @@ from logistics_agent.conductor import (
 from logistics_agent.trace import Step, trace
 
 # how the reasoning steps name each decision process, by its type's name
-PROCESS_LABELS = {"DecisionProcess": "conductor", "ShippingRequestFiller": "fill_shipping_request"}
+PROCESS_LABELS = {
+    "DecisionProcess": "conductor",
+    "ShippingRequestFiller": "fill_shipping_request",
+    "VehicleFiller": "fill_vehicle",
+    "PlacementFiller": "fill_placement",
+}
 # the decision process the planner searches with, whose steps are counted on the spinner instead of shown one by one
 SEARCH_PROCESS = "BaseDecisionProcess"
 
@@ -109,6 +120,13 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     # taking shipping requests
     dp.add_operator(ReactToShippingRequestIntent("react_to_shipping_request_intent"))
     dp.add_operator(ConfirmShippingRequest("confirm_shipping_request"))
+    # adding vehicles to the fleet, once the human confirms
+    dp.add_operator(ReactToAddToFleetIntent("react_to_add_to_fleet_intent"))
+    dp.add_operator(PlaceVehicle("place_vehicle"))
+    dp.add_operator(ProposeAddition("propose_addition"))
+    dp.add_operator(AskToConfirmAddition("ask_to_confirm_addition", terminal=True))
+    dp.add_operator(ReactToConfirmIntent("react_to_confirm_intent"))
+    dp.add_operator(ReactToDenyIntent("react_to_deny_intent"))
     # estimating prices
     dp.add_operator(ReactToEstimatePriceIntent("react_to_estimate_price_intent"))
     dp.add_operator(PlanDelivery("plan_delivery"))

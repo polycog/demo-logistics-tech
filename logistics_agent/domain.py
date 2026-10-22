@@ -1,5 +1,15 @@
-from cognition import Entity, BinaryRelation
+from enum import StrEnum
+from typing import ClassVar
+
+from cognition import BinaryRelation, DocEnum, Entity
 from pydantic import BaseModel, Field
+
+
+class Tag(StrEnum):
+    """what a model is to the carrier; a model has its tags in the class variable tags"""
+    # what the carrier owns, which the human can add to
+    FLEET = "fleet"
+
 
 class City(Entity):
     """city in the logistics network; each city has one terminal and one airport, and truck routes connect cities"""
@@ -34,15 +44,21 @@ class Shipment(Entity):
     details: str = Field(description="what is shipped, such as 'pallet of office chairs'")
     weight: float = Field(description="weight of the shipment, in pounds")
 
+# the field descriptions of the vehicles are the questions the agent asks the human to add one to the fleet
 class Vehicle(Entity):
     """base type for anything that can carry shipments
 
     a vehicle is always at a location (terminal or airport); shipments inside it
     move along with it
     """
-    display_name: str = Field(description="name the carrier uses for the vehicle")
-    model: str = Field(description="make and model of the vehicle")
-    max_payload: float = Field(description="heaviest load the vehicle can carry, in pounds")
+    # every vehicle is part of the carrier's fleet, which the human can add to
+    tags: ClassVar[frozenset[Tag]] = frozenset({Tag.FLEET})
+    # what the names of new vehicles of the type start with, such as truck in truck3
+    name_prefix: ClassVar[str] = "vehicle"
+
+    display_name: str = Field(description="What do you call the vehicle?")
+    model: str = Field(description="What make and model is the vehicle?")
+    max_payload: float = Field(description="What is the heaviest load the vehicle can carry, in pounds?")
 
 class Truck(Vehicle):
     """vehicle that travels by road
@@ -50,14 +66,30 @@ class Truck(Vehicle):
     moves between a terminal and the airport in the same city,
     or between terminals in different cities
     """
-    license_plate: str
+    name_prefix: ClassVar[str] = "truck"
+
+    license_plate: str = Field(description="What is the truck's license plate?")
 
 class Airplane(Vehicle):
     """vehicle that travels by air
 
     stays at airports and flies between airports connected by an air route
     """
-    tail_number: str = Field(description="registration number painted on the airplane")
+    name_prefix: ClassVar[str] = "air"
+
+    tail_number: str = Field(description="What is the airplane's tail number, the registration painted on it?")
+
+
+class VehicleType(DocEnum):
+    """Which kind of vehicle would you like to add to the fleet: a truck or an airplane?"""
+
+    TRUCK = ("truck", "a vehicle that travels by road, between terminals and airports")
+    AIRPLANE = ("airplane", "a vehicle that travels by air, between airports")
+
+    @property
+    def model(self) -> type[Vehicle]:
+        """the model of vehicles of the type"""
+        return {VehicleType.TRUCK: Truck, VehicleType.AIRPLANE: Airplane}[self]
 
 class TruckRoute(BinaryRelation):
     """road connection between two different cities, driven between their terminals
@@ -84,8 +116,8 @@ class At(BinaryRelation):
     entity1 is the shipment or vehicle; entity2 is a location (terminal or airport),
     or a vehicle when a shipment has been loaded into it
     """
-    entity1: Shipment | Vehicle = Field(frozen=True)
-    entity2: Location | Vehicle = Field(frozen=True)
+    entity1: Shipment | Vehicle = Field(frozen=True, description="What is it?")
+    entity2: Location | Vehicle = Field(frozen=True, description="Where is it now: which terminal or airport?")
 
 class GasPrice(Entity):
     """what fuel costs the carrier for every mile a truck drives"""

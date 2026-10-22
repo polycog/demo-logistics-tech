@@ -121,6 +121,7 @@ misunderstanding.
 | Say hello | "hello there" |
 | What the agent can do | "what can you do?" |
 | Acknowledge the agent | "thanks" (the agent replies and repeats any question it was waiting on); "ok", "got it" (the agent says nothing) |
+| Add a vehicle to the fleet | "add a new truck called Road Runner" (the agent asks for what it still needs, then where the vehicle is, and asks you to confirm before adding it) |
 | Stop | "quit", "exit", "bye" |
 
 ## The world
@@ -161,7 +162,10 @@ CITATION.cff       how to cite this repository
 | `communicator.py` | Language understanding: the human's intents, the agent's asks, and the LLM configuration. |
 | `reasoner.py` | Builds and maintains the world graph, and answers queries and updates against it. |
 | `planner.py` | The search planner: what each action does to the world, and the search for the cheapest plan. |
-| `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles, shipments, routes, costs, actions, and the shipping request (a shipment, the location it is sent from, and the location it goes to), whose docstring and field descriptions are the questions the agent asks for it. |
+| `fill_vehicle.py` | The sub-process that fills in a vehicle to add to the fleet: its kind, classified among the `VehicleType`s, then its fields, all at once. |
+| `fill_placement.py` | The sub-process that fills in where a vehicle being added is: an `At` relation to an existing terminal or airport (only airports for an airplane). |
+| `drafts.py` | Drafts of models whose fields are all required, such as a truck, filled in over several turns and built once nothing is missing. |
+| `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles (all tagged `FLEET`, and the `VehicleType`s the human can add), shipments, routes, costs, actions, and the shipping request (a shipment, the location it is sent from, and the location it goes to). The docstrings and field descriptions of what the agent fills in are the questions it asks for them. |
 
 The conductor manages the conversation with a **stack of intents**. Every turn, it recognizes the human's intent
 with an `EnumClassifier` and pushes it onto the stack. Recognizing only pushes: every other operator applies to what
@@ -188,6 +192,10 @@ model, so each thing the human mentions fills in one part only. The detailed des
 [`design-docs/model-filler.md`](design-docs/model-filler.md): the sub-process, how the conductor asks for missing
 parts and pops the asks, why the parts are extracted together, the known limitations, and a proposal for making the
 filler generic in `cognition`.
+
+Adding a vehicle to the fleet uses the same stack: the agent fills in the vehicle, then where it is, then asks the
+human to confirm before it changes the world graph. Its design is in
+[`design-docs/fleet-updates.md`](design-docs/fleet-updates.md).
 
 The language model never decides facts or prices — it only translates between the human and the graph.
 
