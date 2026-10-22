@@ -35,8 +35,6 @@ from logistics_agent.conductor import (
 )
 from logistics_agent.domain import At, City, Location, Shipment, ShippingRequest, UnloadAction
 from logistics_agent.fill_shipping_request import (
-    ExtractDestination,
-    ExtractOrigin,
     ShippingRequestFiller,
     ShippingRequestState,
 )
@@ -63,6 +61,10 @@ BOOKS_FROM_SEATTLE = "200 pounds of books from Seattle"
 TO_DENVER = "Denver"
 # an answer about a delivery that gives none of it
 NOWHERE = "somewhere far away"
+# only what is shipped; then where it is picked up from, alone or with where it is going
+JUST_BOOKS = "200 pounds of books"
+BOSTON = "Boston"
+BOSTON_TO_DENVER = "Boston, and it is going to Denver"
 REQUEST_QUESTION = AskFor(ShippingRequest).question
 DESTINATION_QUESTION = AskFor(ShippingRequest, "destination").question
 
@@ -75,6 +77,9 @@ INTENTS = {
     BOOKS_FROM_SEATTLE: HumanIntent.SHIPPING_REQUEST,
     TO_DENVER: HumanIntent.SHIPPING_REQUEST,
     NOWHERE: HumanIntent.SHIPPING_REQUEST,
+    JUST_BOOKS: HumanIntent.SHIPPING_REQUEST,
+    BOSTON: HumanIntent.SHIPPING_REQUEST,
+    BOSTON_TO_DENVER: HumanIntent.SHIPPING_REQUEST,
 }
 
 
@@ -107,27 +112,27 @@ class FakeDescribeFacts:
 class FakeModelPopulator:
     """stands in for ModelPopulator in the ShippingRequestFiller sub-process: the delivery is a box of books, 200
     pounds, from Seattle to Denver, of which BOOKS_FROM_SEATTLE leaves out the destination and TO_DENVER gives only the
-    destination; anything else gives none of it"""
+    destination; anything else gives none of it; answers with the parts the model it is asked to fill in has, as the
+    language model filling them in together would"""
 
-    BOOKS = Shipment(name="books", details="box of books", weight=200)
+    BOOKS = {"details": "box of books", "weight": 200}
     # what each phrase gives: the origin's city, the destination's city, and the shipment, or None for a part it does
     # not give
     GIVES = {
         SHIPPING: ("Seattle", "Denver", BOOKS),
         BOOKS_FROM_SEATTLE: ("Seattle", None, BOOKS),
         TO_DENVER: (None, "Denver", None),
+        JUST_BOOKS: (None, None, BOOKS),
+        BOSTON: ("Boston", None, None),
+        BOSTON_TO_DENVER: ("Boston", "Denver", None),
     }
 
     def __init__(self, model_type, task_desc: str) -> None:
         self.model_type, self.task_desc = model_type, task_desc
 
     def __call__(self, utterance: str, llm, *extra: str, **kwargs):
-        origin, destination, shipment = self.GIVES.get(utterance, (None, None, None))
-        if self.model_type is Shipment:
-            if shipment is None:
-                raise fill_shipping_request.UnexpectedModelBehavior("no shipment")
-            return shipment
-        return self.model_type.model_validate({"city": origin if self.task_desc == ExtractOrigin.TASK_DESC else destination})
+        given = dict(zip(("origin", "destination", "shipment"), self.GIVES.get(utterance, (None, None, None))))
+        return self.model_type.model_validate({k: v for k, v in given.items() if k in self.model_type.model_fields})
 
 
 @pytest.fixture(autouse=True)
@@ -228,6 +233,25 @@ def test_an_answer_that_gives_nothing_gets_the_question_asked_again(chat):
     assert chat(BOOKS_FROM_SEATTLE, NOWHERE, "quit")[2] == DESTINATION_QUESTION
 
 
+def test_an_answer_to_the_question_for_one_city_fills_in_only_that_city(chat):
+    assert chat(JUST_BOOKS, BOSTON, TO_DENVER, "quit") == [
+        INTRODUCTION,
+        AskFor(ShippingRequest, "origin").question,
+        DESTINATION_QUESTION,
+        "Got it: the box of books (200 lb) from Boston to Denver. Ask me what it costs whenever you are ready.",
+        "Goodbye!",
+    ]
+
+
+def test_an_answer_that_also_gives_another_part_fills_in_both(chat):
+    assert chat(JUST_BOOKS, BOSTON_TO_DENVER, "quit") == [
+        INTRODUCTION,
+        AskFor(ShippingRequest, "origin").question,
+        "Got it: the box of books (200 lb) from Boston to Denver. Ask me what it costs whenever you are ready.",
+        "Goodbye!",
+    ]
+
+
 def test_small_talk_while_the_agent_is_asking_is_answered_and_the_question_asked_again(chat):
     assert chat(BOOKS_FROM_SEATTLE, HELLO, TO_DENVER, "quit") == [
         INTRODUCTION,
@@ -246,7 +270,7 @@ def test_with_trace_the_steps_of_the_reasoning_are_shown_among_the_replies(chat)
     replies = chat(SHIPPING, "quit", args=("--trace",))
     shown = "\n".join(replies)
     for step in ("· conductor: recognize_intent", "· conductor: react_to_shipping_request_intent",
-                 "· fill_shipping_request: extract_origin", "· fill_shipping_request: extract_shipment",
+                 "· fill_shipping_request: extract_parts",
                  "· fill_shipping_request: compose_asks",
                  "· conductor: reply", "· conductor: say_goodbye"):
         assert step in shown
@@ -751,20 +775,30 @@ def test_shipping_request_runs_a_fresh_sub_process_over_a_new_request_when_the_a
     sub_process = op._shipping_request_filler
     assert sub_process.reinits == 1
     assert sub_process.calls == [{
-        "utterance": Utterance(SHIPPING), "asked": QUESTION, "reasoner": state.reasoner, "request": ShippingRequest(),
+        "utterance": Utterance(SHIPPING), "answering": None, "reasoner": state.reasoner, "request": ShippingRequest(),
         "suppress_errors": False,
     }]
 
 
 @pytest.mark.parametrize("ask", [ASK_REQUEST, ASK_DESTINATION])
-def test_shipping_request_fills_in_the_request_being_asked_for(fake_filler, ask):
+def test_shipping_request_fills_in_the_request_being_asked_for_answering_the_ask_just_asked(fake_filler, ask):
     fake_filler.result = filled(BOOKS_REQUEST)
     state = heard(SHIPPING, working_on(ask))
     state.shipping_request = BOOKS_FROM_SEATTLE_REQUEST
     op = ReactToShippingRequestIntent("op")
     op.perform(state, RecordingIO(SHIPPING))
     [call] = op._shipping_request_filler.calls
-    assert call["request"] is BOOKS_FROM_SEATTLE_REQUEST
+    assert call["request"] is BOOKS_FROM_SEATTLE_REQUEST and call["answering"] == ask
+
+
+@pytest.mark.parametrize("stack, answered", [
+    ([SHIPPING_INTENT], None),
+    ([ASK_REQUEST, SHIPPING_INTENT], ASK_REQUEST),
+    ([ASK_REQUEST, ASK_ORIGIN, SHIPPING_INTENT], ASK_ORIGIN),
+    ([ASK_ORIGIN, PRICE_INTENT, SHIPPING_INTENT], None),
+])
+def test_the_ask_answered_is_the_one_right_under_the_intent_the_utterance_pushed(stack, answered):
+    assert working_on(*stack).answered_ask() == answered
 
 
 def test_shipping_request_takes_a_complete_request_and_asks_for_it_so_it_is_confirmed(fake_filler):

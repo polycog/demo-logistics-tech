@@ -66,13 +66,10 @@ you › I need to ship a pallet of office chairs, 800 pounds, from Seattle to Sa
     · llm: classify HumanIntent
   · conductor: react_to_shipping_request_intent
     · fill_shipping_request: take_request
-    · fill_shipping_request: extract_origin
-      · llm: populate Place
-    · fill_shipping_request: extract_destination
-      · llm: populate Place
-    · fill_shipping_request: extract_shipment
-      · llm: populate Shipment
+    · fill_shipping_request: extract_parts
+      · llm: populate ShippingRequestParts
     · fill_shipping_request: compose_asks
+  · conductor: confirm_shipping_request
   · conductor: reply
 agent › Got it: the pallet of office chairs (800 lb) from Seattle to San Francisco. Ask me what it costs whenever you are ready.
 ```
@@ -147,6 +144,7 @@ The agent lives in the `logistics_agent` package, one job per module:
 ```
 logistics_agent/   the agent
 tests/             offline tests
+design-docs/       detailed designs of parts of the agent
 llm_config.toml    which language model to use
 pyproject.toml     dependencies and the logistics-agent command
 LICENSE, NOTICE    the Apache License 2.0, and the copyright notice
@@ -159,11 +157,11 @@ CITATION.cff       how to cite this repository
 | `conductor.py` | The decision process: the conversation state and one operator per thing the agent can do. |
 | `console.py` | How the conversation looks in the terminal, drawn with Rich: the replies and the thin lines between them, the prompt, the spinner, and the reasoning steps. |
 | `trace.py` | Reports, for `--trace`, which operator each decision process applies, when the planner searches, and where a language model is used. |
-| `fill_shipping_request.py` | The sub-process that fills in a shipping request from what the human says: the cities it goes from and to, which can only be cities the carrier serves, and the shipment. It returns the request and an ask for each part still missing. |
+| `fill_shipping_request.py` | The sub-process that fills in a shipping request from what the human says: the cities it goes from and to, which can only be cities the carrier serves, and the shipment. It extracts every missing part in one call to the language model, and returns the request and an ask for each part still missing. |
 | `communicator.py` | Language understanding: the human's intents, the agent's asks, and the LLM configuration. |
 | `reasoner.py` | Builds and maintains the world graph, and answers queries and updates against it. |
 | `planner.py` | The search planner: what each action does to the world, and the search for the cheapest plan. |
-| `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles, shipments, routes, costs, actions, and the shipping query (a shipment, the terminal it is sent from, and the terminal it goes to). |
+| `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles, shipments, routes, costs, actions, and the shipping request (a shipment, the location it is sent from, and the location it goes to), whose docstring and field descriptions are the questions the agent asks for it. |
 
 The conductor manages the conversation with a **stack of intents**. Every turn, it recognizes the human's intent
 with an `EnumClassifier` and pushes it onto the stack. Recognizing only pushes: every other operator applies to what
@@ -184,6 +182,12 @@ For example, asking for a price before describing the delivery, then leaving out
 | "how much will it cost?" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)` |
 | "200 pounds of books from Seattle" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)`, `AskFor(ShippingRequest, "destination")` |
 | "Denver" | both asks pop, the delivery is planned and priced, and `ESTIMATE_PRICE` pops: empty |
+
+`ShippingRequestFiller` fills in the parts missing from the shipping request together, in one call to the language
+model, so each thing the human mentions fills in one part only. The detailed design is in
+[`design-docs/model-filler.md`](design-docs/model-filler.md): the sub-process, how the conductor asks for missing
+parts and pops the asks, why the parts are extracted together, the known limitations, and a proposal for making the
+filler generic in `cognition`.
 
 The language model never decides facts or prices — it only translates between the human and the graph.
 

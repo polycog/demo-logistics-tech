@@ -109,6 +109,12 @@ class ConversationState:
         assert model is ShippingRequest, f"the agent does not fill in {model.__name__}"
         return self.shipping_request
 
+    def answered_ask(self) -> AskFor | None:
+        """the ask the utterance answers: the agent ends a turn with a question only with its ask on top, so the ask
+        right under the intent the utterance pushed is the one it answers; None when no ask is there"""
+        below_top = self.intent_stack[-2] if len(self.intent_stack) >= 2 else None
+        return below_top if isinstance(below_top, AskFor) else None
+
     def asking_for(self, model: type[BaseModel]) -> bool:
         """whether the agent has asked for the model, or an attribute of it, and is still waiting for it"""
         return any(isinstance(intent, AskFor) and intent.model is model for intent in self.intent_stack)
@@ -305,7 +311,8 @@ class ReactToShippingRequestIntent(Operator[ConversationState]):
     """
     WHEN: SHIPPING_REQUEST is on top: the human described a delivery they want, or part of it
     THEN: fill in the shipping request from the utterance with the ShippingRequestFiller sub-process: the request being
-          asked for, or else a new one; pop the intent, and ask for the request, with the asks for its missing parts
+          asked for, or else a new one, reading the utterance as the answer to the ask just asked, if any; pop the
+          intent, and ask for the request, with the asks for its missing parts
           above, so the request is confirmed once they have what they asked for
     """
 
@@ -325,7 +332,7 @@ class ReactToShippingRequestIntent(Operator[ConversationState]):
         sub_process = self._shipping_request_filler
         sub_process.reinit()
         result = sub_process(
-            utterance=state.human_utterance, asked=state.asked, reasoner=state.reasoner,
+            utterance=state.human_utterance, answering=state.answered_ask(), reasoner=state.reasoner,
             request=request or ShippingRequest(), suppress_errors=False,
         )
         assert result is not None and result.request is not None and result.asks is not None
