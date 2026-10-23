@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo</title>
+  <style>
+    :root {
+      --bg: #e9edf2;
+      --surface: #ffffff;
+      --ink: #1c2530;
+      --muted: #5b6878;
+      --line: #cfd6df;
+      --accent: #2a55c9;
+      --accent-ink: #ffffff;
+      --notice: #fff4d6;
+      --notice-ink: #5a4500;
+      --error: #b3261e;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #12171e;
+        --surface: #1b222c;
+        --ink: #e3e8ef;
+        --muted: #94a1b2;
+        --line: #2e3845;
+        --accent: #7b98ff;
+        --accent-ink: #0d1424;
+        --notice: #3a3216;
+        --notice-ink: #f3e3a8;
+        --error: #ff8a80;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      justify-content: center;
+    }
+    .app {
+      width: 100%;
+      max-width: 46rem;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+    }
+    header {
+      padding: 1rem 1.25rem 0.75rem;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.25rem; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+    .status { color: var(--muted); font-size: 0.8125rem; margin-left: auto; }
+    .status button {
+      font: inherit; color: var(--accent); background: none; border: 0;
+      padding: 0 0 0 0.75rem; cursor: pointer; text-decoration: underline;
+    }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.625rem;
+    }
+    .msg {
+      max-width: 85%;
+      padding: 0.5rem 0.875rem;
+      border-radius: 1rem;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .bot  { align-self: flex-start; background: var(--bg); border-bottom-left-radius: 0.25rem; }
+    .user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 0.25rem; }
+    .notice {
+      align-self: stretch; text-align: center; font-size: 0.8125rem;
+      background: var(--notice); color: var(--notice-ink);
+      padding: 0.375rem 0.75rem; border-radius: 0.375rem;
+    }
+    .error { align-self: flex-start; color: var(--error); font-size: 0.875rem; }
+    .pending { color: var(--muted); }
+    form {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.75rem 1.25rem 1rem;
+      border-top: 1px solid var(--line);
+    }
+    textarea {
+      flex: 1; resize: none; font: inherit; color: var(--ink);
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: 0.75rem; padding: 0.5rem 0.75rem; min-height: 2.75rem; max-height: 10rem;
+    }
+    form button {
+      font: inherit; font-weight: 600; border: 0; border-radius: 0.75rem;
+      padding: 0 1.125rem; background: var(--accent); color: var(--accent-ink); cursor: pointer;
+    }
+    form button:disabled { opacity: 0.5; cursor: default; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1 id="title">Demo</h1>
+      <span class="status">
+        <span id="instance">Connecting</span>
+        <button type="button" id="reset">Start over</button>
+      </span>
+    </header>
+    <main id="log" aria-live="polite"></main>
+    <form id="form">
+      <textarea id="input" rows="1" placeholder="Type a message" aria-label="Message" autofocus></textarea>
+      <button type="submit" id="send">Send</button>
+    </form>
+  </div>
+
+  <script>
+    let allowUnsafeOutput = false;
+
+    // The browser owns the session id. It survives page reloads (localStorage)
+    // and is sent with every request; the server uses it as the session-map key.
+    const KEY = "demo-session-id";
+    function getSessionId() {
+      let id = null;
+      try { id = localStorage.getItem(KEY); } catch {}
+      if (!id) {
+        id = crypto.randomUUID();
+        try { localStorage.setItem(KEY, id); } catch {}
+      }
+      return id;
+    }
+    let sessionId = getSessionId();
+    let greeting = "";
+    let sentAny = false;
+
+    const log = document.getElementById("log");
+    const form = document.getElementById("form");
+    const input = document.getElementById("input");
+    const send = document.getElementById("send");
+    const instanceEl = document.getElementById("instance");
+
+    function add(text, cls, unsafe = false) {
+      const div = document.createElement("div");
+      div.className = cls;
+      if (allowUnsafeOutput && unsafe) {
+        div.insertAdjacentHTML("beforeend", text);
+      } else {
+        div.textContent = text;
+      }
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+      return div;
+    }
+    function showInstance(id) { instanceEl.textContent = "Server instance " + id; }
+
+    async function api(path, payload) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Request failed with status " + res.status + ".");
+      return data;
+    }
+
+    async function init() {
+      try {
+        const cfg = await (await fetch("/api/config")).json();
+        document.title = cfg.title;
+        document.getElementById("title").textContent = cfg.title;
+        greeting = cfg.greeting || "";
+        showInstance(cfg.instance);
+
+        allowUnsafeOutput = cfg.allowunsafe;
+      } catch {
+        instanceEl.textContent = "Server unreachable";
+      }
+      if (greeting) add(greeting, "msg bot", true);
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      add(message, "msg user");
+      send.disabled = true;
+      const pending = add("…", "msg bot pending");
+      try {
+        const data = await api("/api/chat", { session_id: sessionId, message });
+        pending.remove();
+        // The server didn't know this session even though we'd talked before:
+        // the instance restarted or we hit a different one.
+        if (data.new_session && sentAny) {
+          add("The server had no record of this conversation, so it started fresh.", "notice");
+        }
+        sentAny = true;
+        add(data.reply, "msg bot", true);
+        showInstance(data.instance);
+      } catch (err) {
+        pending.remove();
+        add(err.message, "error");
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    });
+
+    // Enter sends, Shift+Enter adds a newline.
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+    });
+
+    document.getElementById("reset").addEventListener("click", async () => {
+      try { await api("/api/reset", { session_id: sessionId }); } catch {}
+      try { localStorage.removeItem(KEY); } catch {}
+      sessionId = getSessionId();
+      sentAny = false;
+      log.innerHTML = "";
+      if (greeting) add(greeting, "msg bot", true);
+      input.focus();
+    });
+
+    init();
+  </script>
+</body>
+</html>

@@ -105,10 +105,7 @@ class HumanInteraction(Sensor[Utterance], Actuator[Utterance, None]):
             self.console.show_reply(param.phrase)
 
 
-def build_decision_process() -> tuple[DecisionProcess[ConversationState], ConversationState]:
-    """builds the decision process with its operators, over a fresh conversation state"""
-    state = ConversationState()
-    dp = DecisionProcess[ConversationState](lambda: state)
+def add_dp_ops(dp: DecisionProcess[ConversationState]) -> DecisionProcess[ConversationState]:
     dp.add_operator(Introduce("introduce", terminal=True))
     dp.add_operator(SayGoodbye("say_goodbye", terminal=True))
     dp.add_operator(Acknowledge("acknowledge", terminal=True))
@@ -136,7 +133,13 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     dp.add_operator(AskQuestion("ask_question", terminal=True))
     # ending the turn once the stack is empty
     dp.add_operator(Reply("reply", terminal=True))
-    return dp, state
+
+    return dp
+
+def build_decision_process() -> tuple[DecisionProcess[ConversationState], ConversationState]:
+    """builds the decision process with its operators, over a fresh conversation state"""
+    state = ConversationState()
+    return add_dp_ops(DecisionProcess[ConversationState](lambda: state)), state
 
 
 def build_assistant(

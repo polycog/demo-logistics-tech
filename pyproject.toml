@@ -18,6 +18,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "flask>=3.1.3",
     "polycog-cognition>=1.0.2",
     "pydantic-ai-slim[openai]",
     "rich>=15.0.0",
@@ -30,6 +31,7 @@ Issues = "https://github.com/polycog/demo-logistics-tech/issues"
 
 [project.scripts]
 logistics-agent = "logistics_agent.assistant:main"
+logiweb = "logistics_agent.web:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14"]
