@@ -174,21 +174,22 @@ class Reasoner:
             n += 1
         return f"{prefix}{n}"
 
-    def add_entity(self, entity: Entity, location: str | None = None) -> None:
-        """adds a new entity to the world graph, at the named location if one is given; raises ValueError when the
-        name is already taken, KeyError when the location refers to nothing, and pydantic.ValidationError when the
-        entity cannot be at that location"""
+    def add_entity(self, entity: Entity) -> None:
+        """adds a new entity to the world graph, with no relations; raises ValueError when the name is already taken"""
         if self.world.snapshot.entity_by_name(entity.name) is not None:
             raise ValueError(f"an entity named {entity.name} already exists")
-        at = None
-        if location is not None:
-            place = self.find_entity(location)
-            if place is None:
-                raise KeyError(location)
-            at = At(entity1=entity, entity2=place)
         self.world.add_entity(entity)
-        if at is not None:
-            self.world.add_relation(at)
+
+    def add_relation(self, relation: BinaryRelation) -> None:
+        """adds a relation, such as where an entity is, between two entities already in the world graph; raises
+        KeyError when either of them is not"""
+        self.world.add_relation(relation)
+
+    def remove_relation(self, relation_type: type[BinaryRelation], entity1: str, entity2: str) -> None:
+        """removes the relation of the type from the entity named entity1 to the one named entity2, such as a truck
+        route that is blocked; the relations the world graph gives back are frozen copies, so the type is the domain
+        model, such as TruckRoute; raises networkx.NetworkXError when there is no such relation"""
+        self.world.remove_edge(entity1, entity2, relation_type.__name__)
 
     def update_entity(self, entity: Entity) -> None:
         """replaces the field values of the existing entity with the same name, keeping its relations; raises

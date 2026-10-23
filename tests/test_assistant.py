@@ -10,16 +10,18 @@ from collections import deque
 
 import pytest
 
-from logistics_agent import assistant, conductor, fill_placement, fill_shipping_request, fill_vehicle
+from logistics_agent import (
+    assistant, conductor, fill_placement, fill_route, fill_shipping_request, fill_vehicle, inspect_state,
+)
 from logistics_agent.communicator import (
-    AgentIntent, AskFor, AskForKind, ConfirmAddition, HumanIntent, NotUnderstood, Utterance,
+    AgentIntent, AskFor, AskForKind, ConfirmChange, HumanIntent, NotUnderstood, Utterance,
 )
 from logistics_agent.console import AGENT_PREFIX
 from logistics_agent.trace import Step
 from logistics_agent.conductor import (
     Acknowledge,
     AskQuestion,
-    AskToConfirmAddition,
+    AskToConfirmChange,
     ConfirmShippingRequest,
     INTRODUCTION,
     ConversationState,
@@ -29,20 +31,27 @@ from logistics_agent.conductor import (
     PlanDelivery,
     PopSatisfiedAsk,
     ProposeAddition,
+    ProposeClosure,
     ReactToAddToFleetIntent,
     ReactToAskCapabilitiesIntent,
     ReactToConfirmIntent,
     ReactToDenyIntent,
     ReactToEstimatePriceIntent,
     ReactToGreetingIntent,
+    ReactToInspectStateIntent,
+    ReactToObstructRouteIntent,
     ReactToShippingRequestIntent,
     RecognizeIntent,
     Reply,
     RespondUnknown,
     SayGoodbye,
+    VehicleAddition,
 )
-from logistics_agent.domain import At, City, Location, Shipment, ShippingRequest, Truck, UnloadAction, VehicleType
+from logistics_agent.domain import (
+    AirRoute, At, City, Location, RouteReport, RouteType, Shipment, ShippingRequest, Truck, TruckRoute, UnloadAction, VehicleType,
+)
 from logistics_agent.drafts import build, draft_model
+from logistics_agent.inspect_state import QuestionType
 from logistics_agent.fill_shipping_request import (
     ShippingRequestFiller,
     ShippingRequestState,
@@ -82,6 +91,15 @@ ADD_VEHICLE = "I want to add a vehicle to the fleet"
 A_TRUCK = "a truck"
 YES = "yes, go ahead"
 NO = "no"
+# reporting a blocked route: snow says it is the road; "blocked" does not say, so the agent asks, and "the road" answers
+SNOWED_IN = "the route between Seattle and San Francisco is snowed in"
+BLOCKED = "the route between Seattle and Denver is blocked"
+THE_ROAD = "the road"
+SAME_CITY = "the road between Seattle and Seattle is flooded"
+# questions about the state of the world: the trucks, the whole fleet, and one the agent cannot answer
+WHICH_TRUCKS = "which trucks do you have?"
+WHOLE_FLEET = "what is in your fleet?"
+WHO_DRIVES = "who drives Big Bertha?"
 REQUEST_QUESTION = AskFor(ShippingRequest).question
 DESTINATION_QUESTION = AskFor(ShippingRequest, "destination").question
 
@@ -105,6 +123,13 @@ INTENTS = {
     YES: HumanIntent.CONFIRM,
     "ok": HumanIntent.CONFIRM,
     NO: HumanIntent.DENY,
+    SNOWED_IN: HumanIntent.OBSTRUCT_ROUTE,
+    BLOCKED: HumanIntent.OBSTRUCT_ROUTE,
+    THE_ROAD: HumanIntent.OBSTRUCT_ROUTE,
+    SAME_CITY: HumanIntent.OBSTRUCT_ROUTE,
+    WHICH_TRUCKS: HumanIntent.INSPECT_STATE,
+    WHOLE_FLEET: HumanIntent.INSPECT_STATE,
+    WHO_DRIVES: HumanIntent.INSPECT_STATE,
 }
 
 
@@ -168,6 +193,10 @@ class FakeFleetPopulator:
         ADD_TRUCK: {"display_name": "Road Runner"},
         TRUCK_DETAILS: {"model": "Ford F-750", "max_payload": 12000, "license_plate": "7XYZ123"},
         AT_DENVER: {"entity2": "Denver Terminal"},
+        SNOWED_IN: {"city1": "Seattle", "city2": "San Francisco"},
+        BLOCKED: {"city1": "Seattle", "city2": "Denver"},
+        SAME_CITY: {"city1": "Seattle", "city2": "Seattle"},
+        WHICH_TRUCKS: {"kind": "truck"},
     }
 
     def __init__(self, model_type, task_desc: str) -> None:
@@ -179,17 +208,22 @@ class FakeFleetPopulator:
 
 
 class FakeKindClassifier:
-    """stands in for the EnumClassifier of the kind of vehicle: a truck for the phrases that name one, and no kind for
-    anything else; an answer is classified together with the question asked"""
+    """stands in for the EnumClassifier of a kind, of vehicle or of route: the kind each phrase names, when it is one
+    of the enum's, and no kind for anything else; an answer is classified together with the question asked"""
 
-    TRUCKS = {ADD_TRUCK, A_TRUCK}
+    KINDS = {
+        ADD_TRUCK: VehicleType.TRUCK, A_TRUCK: VehicleType.TRUCK,
+        SNOWED_IN: RouteType.ROAD, THE_ROAD: RouteType.ROAD, SAME_CITY: RouteType.ROAD,
+        WHICH_TRUCKS: QuestionType.FLEET, WHOLE_FLEET: QuestionType.FLEET,
+    }
 
     def __init__(self, enum_type, task_desc: str) -> None:
-        pass
+        self.enum_type = enum_type
 
     def __call__(self, text: str, llm, **kwargs):
         answer = re.search(r'the human answered: "(.*)"$', text)
-        return (VehicleType.TRUCK if (answer.group(1) if answer else text) in self.TRUCKS else None), 1.0
+        kind = self.KINDS.get(answer.group(1) if answer else text)
+        return (kind if isinstance(kind, self.enum_type) else None), 1.0
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +236,10 @@ def fake_language(monkeypatch):
     monkeypatch.setattr(fill_shipping_request, "ModelPopulator", FakeModelPopulator)
     monkeypatch.setattr(fill_vehicle, "ModelPopulator", FakeFleetPopulator)
     monkeypatch.setattr(fill_vehicle, "EnumClassifier", FakeKindClassifier)
+    monkeypatch.setattr(fill_route, "EnumClassifier", FakeKindClassifier)
+    monkeypatch.setattr(fill_route, "ModelPopulator", FakeFleetPopulator)
+    monkeypatch.setattr(inspect_state, "EnumClassifier", FakeKindClassifier)
+    monkeypatch.setattr(inspect_state, "ModelPopulator", FakeFleetPopulator)
     monkeypatch.setattr(fill_placement, "ModelPopulator", FakeFleetPopulator)
     return fake_describe_facts
 
@@ -332,7 +370,7 @@ def test_a_truck_is_added_to_the_fleet_once_it_is_described_placed_and_confirmed
 
 def test_the_kind_of_vehicle_is_asked_for_when_the_human_does_not_say(chat):
     assert chat(ADD_VEHICLE, A_TRUCK, "quit")[1:3] == [
-        AskForKind().question, Truck.model_fields["display_name"].description,
+        AskForKind(VehicleType).question, Truck.model_fields["display_name"].description,
     ]
 
 
@@ -344,6 +382,61 @@ def test_small_talk_before_confirming_is_answered_and_the_confirmation_asked_aga
     assert chat(ADD_TRUCK, TRUCK_DETAILS, AT_DENVER, HELLO, "quit")[4] == (
         f"{ReactToGreetingIntent.REPLY} {ROAD_RUNNER_QUESTION}"
     )
+
+
+SEATTLE_SF_ROAD = "the road between Seattle and San Francisco"
+
+
+def test_a_snowed_in_road_is_closed_once_confirmed(chat):
+    assert chat(SNOWED_IN, YES, "quit") == [
+        INTRODUCTION,
+        f"Shall I close {SEATTLE_SF_ROAD}?",
+        f"Closed {SEATTLE_SF_ROAD}; I will plan deliveries around it.",
+        "Goodbye!",
+    ]
+
+
+def test_the_kind_of_route_is_asked_for_when_the_cause_does_not_tell(chat):
+    assert chat(BLOCKED, THE_ROAD, "quit")[1:3] == [
+        RouteType.__doc__, "Shall I close the road between Seattle and Denver?",
+    ]
+
+
+def test_a_road_the_human_says_no_to_is_left_open(chat):
+    assert chat(SNOWED_IN, NO, "quit")[2] == f"OK, I left {SEATTLE_SF_ROAD} open."
+
+
+def test_a_route_the_world_graph_does_not_have_is_not_closed(chat):
+    assert chat(SAME_CITY, "quit")[1] == (
+        "I don't know of the road between Seattle and Seattle, so there is nothing to close."
+    )
+
+
+BERTHA = "Big Bertha (Freightliner M2 106 26ft box truck), a truck that carries up to 10,000 lb, at Seattle Terminal"
+ROCKET = "Little Rocket (Isuzu NPR-HD 16ft box truck), a truck that carries up to 6,000 lb, at San Francisco Terminal"
+PELICAN = (
+    "The Pelican (Cessna 408 SkyCourier freighter), an airplane that carries up to 6,000 lb, at Seattle-Tacoma "
+    "International Airport"
+)
+
+
+def test_a_question_about_the_trucks_is_answered_from_the_world_graph(chat):
+    assert chat(WHICH_TRUCKS, "quit")[1] == f"The fleet has 2 trucks: {BERTHA}; {ROCKET}."
+
+
+def test_a_question_about_the_whole_fleet_lists_every_vehicle(chat):
+    assert chat(WHOLE_FLEET, "quit")[1] == f"The fleet has 3 vehicles: {PELICAN}; {BERTHA}; {ROCKET}."
+
+
+def test_a_truck_added_to_the_fleet_is_in_the_next_answer(chat):
+    road_runner = "Road Runner (Ford F-750), a truck that carries up to 12,000 lb, at Denver Terminal"
+    assert chat(ADD_TRUCK, TRUCK_DETAILS, AT_DENVER, YES, WHICH_TRUCKS, "quit")[5] == (
+        f"The fleet has 3 trucks: {BERTHA}; {ROCKET}; {road_runner}."
+    )
+
+
+def test_a_question_about_the_state_the_agent_cannot_answer_is_said_so(chat):
+    assert chat(WHO_DRIVES, "quit")[1] == ReactToInspectStateIntent.CANNOT_ANSWER
 
 
 def test_small_talk_while_the_agent_is_asking_is_answered_and_the_question_asked_again(chat):
@@ -487,11 +580,14 @@ ASK_REQUEST = AskFor(ShippingRequest)
 ASK_ORIGIN = AskFor(ShippingRequest, "origin")
 ASK_DESTINATION = AskFor(ShippingRequest, "destination")
 ASK_SHIPMENT = AskFor(ShippingRequest, "shipment")
-ASK_KIND = AskForKind()
+ASK_KIND = AskForKind(VehicleType)
 ASK_TRUCK = AskFor(Truck)
 ASK_TRUCK_PLATE = AskFor(Truck, "license_plate")
 ASK_PLACEMENT = AskFor(At)
 ASK_LOCATION = AskFor(At, "entity2")
+ASK_ROUTE = AskFor(RouteReport)
+ASK_ROUTE_CITY2 = AskFor(RouteReport, "city2")
+ASK_ROUTE_KIND = AskForKind(RouteType)
 ROAD_RUNNER = Truck(name="truck3", display_name="Road Runner", model="Ford F-750", max_payload=12000,
                     license_plate="7XYZ123")
 
@@ -564,8 +660,8 @@ ALL_OPERATORS = [
     Introduce, SayGoodbye, Acknowledge, RecognizeIntent, RespondUnknown,
     ReactToGreetingIntent, ReactToAskCapabilitiesIntent, ReactToShippingRequestIntent, ConfirmShippingRequest,
     PopSatisfiedAsk, AskQuestion, ReactToEstimatePriceIntent, PlanDelivery, DescribePlan, Reply,
-    ReactToAddToFleetIntent, PlaceVehicle, ProposeAddition, AskToConfirmAddition, ReactToConfirmIntent,
-    ReactToDenyIntent,
+    ReactToAddToFleetIntent, PlaceVehicle, ProposeAddition, ReactToObstructRouteIntent, ProposeClosure,
+    ReactToInspectStateIntent, AskToConfirmChange, ReactToConfirmIntent, ReactToDenyIntent,
 ]
 
 
@@ -731,13 +827,15 @@ HANDLERS = {
     ReactToAddToFleetIntent: HumanIntent.ADD_TO_FLEET,
     ReactToConfirmIntent: HumanIntent.CONFIRM,
     ReactToDenyIntent: HumanIntent.DENY,
+    ReactToObstructRouteIntent: HumanIntent.OBSTRUCT_ROUTE,
+    ReactToInspectStateIntent: HumanIntent.INSPECT_STATE,
     RespondUnknown: NotUnderstood(),
 }
 WORK_OPERATORS = [
     RespondUnknown, ReactToGreetingIntent, ReactToAskCapabilitiesIntent, ReactToShippingRequestIntent,
     ConfirmShippingRequest, PopSatisfiedAsk, AskQuestion, ReactToEstimatePriceIntent, PlanDelivery, DescribePlan, Reply,
-    ReactToAddToFleetIntent, PlaceVehicle, ProposeAddition, AskToConfirmAddition, ReactToConfirmIntent,
-    ReactToDenyIntent,
+    ReactToAddToFleetIntent, PlaceVehicle, ProposeAddition, ReactToObstructRouteIntent, ProposeClosure,
+    ReactToInspectStateIntent, AskToConfirmChange, ReactToConfirmIntent, ReactToDenyIntent,
 ]
 
 
@@ -763,15 +861,17 @@ def test_nothing_but_recognizing_the_intent_applies_while_the_agent_is_listening
 
 TOPS = [
     *HumanIntent, NotUnderstood(), ASK_REQUEST, ASK_ORIGIN, ASK_DESTINATION, ASK_SHIPMENT,
-    ASK_KIND, ASK_TRUCK, ASK_TRUCK_PLATE, ASK_PLACEMENT, ASK_LOCATION, ConfirmAddition(), None,
+    ASK_KIND, ASK_TRUCK, ASK_TRUCK_PLATE, ASK_PLACEMENT, ASK_LOCATION,
+    ASK_ROUTE, ASK_ROUTE_CITY2, ASK_ROUTE_KIND, ConfirmChange(), None,
 ]
 REQUESTS = [None, ShippingRequest(), "books from seattle", "chairs"]
-FLEET_PROGRESS = ["nothing", "partial truck", "whole truck", "placed truck"]
+PROGRESS = ["nothing", "partial truck", "whole truck", "placed truck", "partial route", "whole route"]
 
 
 def adding(state: ConversationState, progress: str) -> ConversationState:
-    """the state, with a truck being added to the fleet as far as the progress says: nothing yet, a draft of the
-    truck with only its name and what it is called, the whole truck with no place yet, or the truck and where it is"""
+    """the state, with a change to the world under way as far as the progress says: a truck being added to the fleet,
+    as a draft with only its name and what it is called, the whole truck with no place yet, or the truck and where it
+    is, waiting to be confirmed; or a route reported blocked, with one city known, or both and its kind"""
     if progress == "partial truck":
         state.vehicle_draft = draft_model(Truck)(name="truck3", display_name="Road Runner")
     elif progress in ("whole truck", "placed truck"):
@@ -779,13 +879,20 @@ def adding(state: ConversationState, progress: str) -> ConversationState:
         state.placement_draft = draft_model(At)(entity1=ROAD_RUNNER)
         if progress == "placed truck":
             state.placement_draft.entity2 = state.reasoner.find_entity("terminal_denver")
+            state.pending_change = VehicleAddition(build(state.placement_draft))
+    elif progress == "partial route":
+        state.route_report = RouteReport(city1=state.reasoner.find_entity("seattle"))
+    elif progress == "whole route":
+        find = state.reasoner.find_entity
+        state.route_report = RouteReport(city1=find("seattle"), city2=find("san_francisco"))
+        state.route_type = RouteType.ROAD
     return state
 
 
 @pytest.mark.parametrize("top", TOPS)
 @pytest.mark.parametrize("request_", REQUESTS)
 @pytest.mark.parametrize("planned_", [False, True])
-@pytest.mark.parametrize("progress", FLEET_PROGRESS)
+@pytest.mark.parametrize("progress", PROGRESS)
 def test_whatever_is_on_top_exactly_one_operator_applies(top, request_, planned_, progress):
     state = working_on(*([] if top is None else [top]), state=ConversationState(human_utterance=Utterance(SHIPPING)))
     adding(state, progress)
@@ -1117,20 +1224,20 @@ def test_propose_addition_swaps_the_placement_for_the_confirmation_once_the_vehi
     op = ProposeAddition("op")
     assert op.can_perform(state, RecordingIO())
     op.perform(state, RecordingIO())
-    assert state.intent_stack == [GREETING, ConfirmAddition()]
+    assert state.intent_stack == [GREETING, ConfirmChange()]
     assert not ProposeAddition("op").can_perform(adding(working_on(ASK_PLACEMENT), "whole truck"), RecordingIO())
 
 
 def test_ask_to_confirm_addition_asks_whether_to_add_the_vehicle_there_and_waits():
-    state, io = adding(working_on(ConfirmAddition()), "placed truck"), RecordingIO()
-    op = AskToConfirmAddition("op")
+    state, io = adding(working_on(ConfirmChange()), "placed truck"), RecordingIO()
+    op = AskToConfirmChange("op")
     assert op.can_perform(state, io)
     op.perform(state, io)
-    assert io.said == [ROAD_RUNNER_QUESTION] and state.listening and state.top == ConfirmAddition()
+    assert io.said == [ROAD_RUNNER_QUESTION] and state.listening and state.top == ConfirmChange()
 
 
 def test_confirm_adds_the_vehicle_where_it_is_so_the_planner_can_use_it():
-    state = adding(heard(YES, working_on(GREETING, ConfirmAddition())), "placed truck")
+    state = adding(heard(YES, working_on(GREETING, ConfirmChange())), "placed truck")
     op = ReactToConfirmIntent("op")
     assert op.can_perform(state, RecordingIO())
     op.perform(state, RecordingIO())
@@ -1141,7 +1248,7 @@ def test_confirm_adds_the_vehicle_where_it_is_so_the_planner_can_use_it():
 
 
 def test_deny_drops_the_vehicle_without_adding_it():
-    state = adding(heard(NO, working_on(ConfirmAddition())), "placed truck")
+    state = adding(heard(NO, working_on(ConfirmChange())), "placed truck")
     ReactToDenyIntent("op").perform(state, RecordingIO())
     assert state.partial_responses == ["OK, I did not add Road Runner to the fleet."] and state.intent_stack == []
     assert state.reasoner.find_entity("Road Runner") is None and state.vehicle_draft is None
@@ -1155,12 +1262,150 @@ def test_a_yes_or_no_to_nothing_is_let_go(op_type, phrase):
 
 
 def test_ok_is_an_answer_while_the_agent_waits_for_a_yes_or_no_and_otherwise_only_an_acknowledgement():
-    confirming = working_on(ConfirmAddition())
+    confirming = working_on(ConfirmChange())
     confirming.listening = True
     assert not Acknowledge("op").can_perform(confirming, RecordingIO("ok"))
     assert RecognizeIntent("op").can_perform(confirming, RecordingIO("ok"))
     assert Acknowledge("op").can_perform(ConversationState(), RecordingIO("ok"))
     assert not RecognizeIntent("op").can_perform(ConversationState(), RecordingIO("ok"))
+
+
+# --- closing blocked routes
+
+
+def report(phrase: str, state: ConversationState | None = None) -> ConversationState:
+    """has a fresh ReactToObstructRouteIntent handle the phrase; checks that it applies, pops its intent, and neither
+    notes nor says anything, leaving that to the asks; returns the state"""
+    state = heard(phrase, state)
+    op, io = ReactToObstructRouteIntent("op"), RecordingIO(phrase)
+    assert op.can_perform(state, io)
+    op.perform(state, io)
+    assert HumanIntent.OBSTRUCT_ROUTE not in state.intent_stack and not io.said and not state.partial_responses
+    return state
+
+
+def test_obstruct_route_fills_in_the_route_and_asks_for_it_whole():
+    state = report(SNOWED_IN, working_on(GREETING))
+    assert (state.route_report.city1.name, state.route_report.city2.name) == ("seattle", "san_francisco")
+    assert state.route_type is RouteType.ROAD and state.intent_stack == [GREETING, ASK_ROUTE]
+
+
+def test_obstruct_route_asks_for_the_kind_when_the_cause_does_not_tell():
+    state = report(BLOCKED)
+    assert state.route_type is None and state.intent_stack == [ASK_ROUTE, ASK_ROUTE_KIND]
+
+
+def test_obstruct_route_continues_the_route_being_asked_for():
+    state = adding(working_on(ASK_ROUTE, ASK_ROUTE_KIND), "partial route")
+    state.route_report = report(BLOCKED).route_report
+    state = report(THE_ROAD, state)
+    assert state.route_report.city2.name == "denver" and state.route_type is RouteType.ROAD
+
+
+def test_a_report_while_the_agent_is_not_asking_about_a_route_starts_over():
+    stale = adding(working_on(PRICE_INTENT), "whole route")
+    stale.route_type = RouteType.AIR
+    stale.route_report.city2 = stale.reasoner.find_entity("denver")
+    state = report(SNOWED_IN, stale)
+    assert state.route_report.city2.name == "san_francisco" and state.route_type is RouteType.ROAD
+    assert state.intent_stack == [PRICE_INTENT, ASK_ROUTE]
+
+
+def propose(state: ConversationState) -> ConversationState:
+    """has a fresh ProposeClosure handle the route reported; checks that it applies; returns the state"""
+    op = ProposeClosure("op")
+    assert op.can_perform(state, RecordingIO())
+    op.perform(state, RecordingIO())
+    return state
+
+
+@pytest.mark.parametrize("kind, model, ends", [
+    (RouteType.ROAD, TruckRoute, {"seattle", "san_francisco"}),
+    (RouteType.AIR, AirRoute, {"SEA", "SFO"}),
+])
+def test_propose_closure_finds_the_route_between_the_cities_and_asks_to_close_it(kind, model, ends):
+    assert kind.model is model
+    state = adding(working_on(GREETING, ASK_ROUTE), "whole route")
+    state.route_type = kind
+    propose(state)
+    change = state.pending_change
+    assert {change.route.entity1.name, change.route.entity2.name} == ends and change.kind is kind
+    assert state.intent_stack == [GREETING, ConfirmChange()]
+    what = "road" if kind is RouteType.ROAD else "flights"
+    assert change.question == f"Shall I close the {what} between Seattle and San Francisco?"
+
+
+def test_propose_closure_finds_a_route_declared_the_other_way_round():
+    state = adding(working_on(ASK_ROUTE), "whole route")
+    find = state.reasoner.find_entity
+    state.route_report = RouteReport(city1=find("san_francisco"), city2=find("seattle"))
+    assert propose(state).pending_change.route.entity1.name == "seattle"
+
+
+def test_propose_closure_says_so_and_drops_the_report_when_there_is_no_such_route():
+    state = adding(working_on(GREETING, ASK_ROUTE), "whole route")
+    state.route_report.city2 = state.reasoner.find_entity("seattle")
+    propose(state)
+    assert state.partial_responses == [
+        "I don't know of the road between Seattle and Seattle, so there is nothing to close."
+    ]
+    assert state.intent_stack == [GREETING] and state.route_report is None and state.pending_change is None
+
+
+def test_propose_closure_waits_for_both_cities_and_the_kind():
+    assert not ProposeClosure("op").can_perform(adding(working_on(ASK_ROUTE), "partial route"), RecordingIO())
+    state = adding(working_on(ASK_ROUTE), "whole route")
+    state.route_type = None
+    assert not ProposeClosure("op").can_perform(state, RecordingIO())
+
+
+def test_confirming_closes_the_road_and_the_planner_plans_around_it():
+    state = propose(adding(working_on(ASK_ROUTE), "whole route"))
+    state = heard(YES, state)
+    ReactToConfirmIntent("op").perform(state, RecordingIO())
+    assert state.partial_responses == [f"Closed {SEATTLE_SF_ROAD}; I will plan deliveries around it."]
+    assert state.intent_stack == [] and state.route_report is None and state.pending_change is None
+    assert state.reasoner.find_relations(TruckRoute, "seattle", "san_francisco") == []
+    state.partial_responses.clear()
+    assert estimate(state).price == 845.0, "the pallet of chairs now flies, where it was driven for $802"
+
+
+def test_saying_no_leaves_the_road_open():
+    state = heard(NO, propose(adding(working_on(ASK_ROUTE), "whole route")))
+    ReactToDenyIntent("op").perform(state, RecordingIO())
+    assert state.partial_responses == [f"OK, I left {SEATTLE_SF_ROAD} open."] and state.pending_change is None
+    assert state.reasoner.find_relations(TruckRoute, "seattle", "san_francisco") != []
+
+
+# --- answering questions about the state of the world
+
+
+def test_inspect_state_notes_the_answer_and_pops_its_intent():
+    state, note, _ = react(ReactToInspectStateIntent, WHICH_TRUCKS, working_on(GREETING))
+    assert note == f"The fleet has 2 trucks: {BERTHA}; {ROCKET}." and state.intent_stack == [GREETING]
+
+
+def test_inspect_state_reads_the_question_with_the_ask_it_answers(monkeypatch):
+    seen = {}
+    real = conductor.StateInspector.__call__
+
+    def spy(self, **args):
+        seen.update(args)
+        return real(self, **args)
+
+    monkeypatch.setattr(conductor.StateInspector, "__call__", spy)
+    react(ReactToInspectStateIntent, WHICH_TRUCKS, working_on(ASK_DESTINATION))
+    assert seen["answering"] == ASK_DESTINATION
+
+
+def test_the_fleet_answer_says_so_when_there_is_no_vehicle_of_the_kind():
+    assert conductor.fleet_answer(VehicleType.AIRPLANE, []) == "The fleet has no airplanes."
+    assert conductor.fleet_answer(None, []) == "The fleet has no vehicles."
+
+
+@pytest.mark.parametrize("noun, expected", [("truck", "a truck"), ("airplane", "an airplane")])
+def test_with_article_puts_a_or_an_in_front_as_the_noun_sounds(noun, expected):
+    assert conductor.with_article(noun) == expected
 
 
 # --- estimating prices

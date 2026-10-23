@@ -18,7 +18,7 @@ from logistics_agent.reasoner import Reasoner
 
 PHRASE = "add a truck called Road Runner, a Ford F-750 that carries 12000 pounds, plate 7XYZ123"
 ROAD_RUNNER = {"display_name": "Road Runner", "model": "Ford F-750", "max_payload": 12000, "license_plate": "7XYZ123"}
-ASK_KIND = AskForKind()
+ASK_KIND = AskForKind(VehicleType)
 
 
 class FakeEnumClassifier:

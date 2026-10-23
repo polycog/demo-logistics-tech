@@ -1,9 +1,9 @@
 """offline tests of the reasoner's queries over the world graph and its updates to it"""
 
 import pytest
-from pydantic import ValidationError
+from networkx import NetworkXError
 
-from logistics_agent.domain import Airplane, At, GasPrice, Terminal, Shipment, Truck, Vehicle
+from logistics_agent.domain import AirRoute, Airplane, At, GasPrice, Terminal, Shipment, Truck, TruckRoute, Vehicle
 from logistics_agent.reasoner import Reasoner
 
 
@@ -98,17 +98,10 @@ def test_fresh_name_skips_names_in_use():
     assert reasoner.fresh_name("airplane") == "airplane1"
 
 
-def test_add_entity_places_it_at_the_location():
-    reasoner = Reasoner()
-    reasoner.add_entity(Shipment(name="shipment2", details="box of books", weight=200), "Boston Terminal")
-    assert reasoner.find_entity("shipment2").weight == 200
-    assert location_of(reasoner, "shipment2") == "terminal_boston"
-
-
-def test_add_entity_without_a_location_adds_no_relation():
+def test_add_entity_adds_it_with_no_relations():
     reasoner = Reasoner()
     reasoner.add_entity(Shipment(name="shipment2", details="box of books", weight=200))
-    assert reasoner.find_entity("shipment2") is not None
+    assert reasoner.find_entity("shipment2").weight == 200
     assert reasoner.find_relations(At, "shipment2") == []
 
 
@@ -119,18 +112,39 @@ def test_add_entity_refuses_a_name_in_use():
     assert reasoner.find_entity("shipment1").details == "crate of machine parts"
 
 
-def test_add_entity_refuses_an_unknown_location_and_adds_nothing():
+# === adding relations
+
+
+def test_add_relation_places_an_entity_at_a_location():
     reasoner = Reasoner()
+    books = Shipment(name="shipment2", details="box of books", weight=200)
+    reasoner.add_entity(books)
+    reasoner.add_relation(At(entity1=books, entity2=reasoner.find_entity("Boston Terminal")))
+    assert location_of(reasoner, "shipment2") == "terminal_boston"
+
+
+def test_add_relation_refuses_an_entity_not_in_the_world_graph_and_adds_nothing():
+    reasoner = Reasoner()
+    books = Shipment(name="shipment2", details="box of books", weight=200)
     with pytest.raises(KeyError):
-        reasoner.add_entity(Shipment(name="shipment2", details="box of books", weight=200), "narnia")
-    assert reasoner.find_entity("shipment2") is None
+        reasoner.add_relation(At(entity1=books, entity2=reasoner.find_entity("Boston Terminal")))
+    assert reasoner.find_entity("shipment2") is None and reasoner.find_relations(At, "shipment2") == []
 
 
-def test_add_entity_refuses_a_location_it_cannot_be_at_and_adds_nothing():
+# === removing relations
+
+
+def test_remove_relation_removes_a_route_given_as_the_world_graph_has_it():
     reasoner = Reasoner()
-    with pytest.raises(ValidationError):
-        reasoner.add_entity(Shipment(name="shipment2", details="box of books", weight=200), "gas_price")
-    assert reasoner.find_entity("shipment2") is None
+    [road] = reasoner.find_relations(TruckRoute, "seattle", "san_francisco")
+    reasoner.remove_relation(TruckRoute, road.entity1.name, road.entity2.name)
+    assert reasoner.find_relations(TruckRoute, "seattle", "san_francisco") == []
+    assert reasoner.find_relations(AirRoute, "SEA", "SFO") != [], "the flights stay"
+
+
+def test_remove_relation_refuses_a_relation_that_is_not_there():
+    with pytest.raises(NetworkXError):
+        Reasoner().remove_relation(TruckRoute, "seattle", "seattle")
 
 
 # === updating entities

@@ -38,7 +38,7 @@ def test_known_entities_names_everything_the_human_can_refer_to():
 
 def test_known_entities_follows_changes_to_the_world():
     reasoner = Reasoner()
-    reasoner.add_entity(Shipment(name="shipment2", details="box of books", weight=200), "terminal_boston")
+    reasoner.add_entity(Shipment(name="shipment2", details="box of books", weight=200))
     assert "shipment shipment2: box of books" in known_entities(reasoner.world)
 
 

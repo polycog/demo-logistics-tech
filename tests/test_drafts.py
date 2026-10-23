@@ -37,7 +37,7 @@ def test_every_field_the_human_gives_of_a_vehicle_type_is_asked_with_a_question(
 
 
 def test_the_kind_and_where_a_vehicle_is_are_asked_with_questions():
-    question = AskForKind().question
+    question = AskForKind(VehicleType).question
     assert question == VehicleType.__doc__ and question.endswith("?")
     assert all(kind.value in question for kind in VehicleType)
     assert AskFor(At, "entity2").question.endswith("?")

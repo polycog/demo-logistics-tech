@@ -293,7 +293,7 @@ class LogisticsPlanner():
                                         EvolverDriveTruckLongDistance)
             )
         planner.run()
-        return planner.plan, planner.plan_cost
+        return [action for action in planner.plan], planner.plan_cost
 
     def create_goal_check(self) -> Callable[[WorldSnapshot], bool]:
         """builds the planner's goal test from the goal facts"""

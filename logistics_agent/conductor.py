@@ -3,8 +3,8 @@ decide what to do with each utterance
 
 the conversation is managed with a stack of intents: the human's intents, pushed as they are recognized and popped
 once they are done, and the agent's own: the asks for what it needs from the human, pushed when it finds something
-missing and popped once it has it, the question whether to go ahead with adding a vehicle to the fleet, and the note
-that it did not understand an utterance. RecognizeIntent only pushes;
+missing and popped once it has it, the question whether to go ahead with a change to the world, such as adding a
+vehicle to the fleet or closing a blocked route, and the note that it did not understand an utterance. RecognizeIntent only pushes;
 every operator that works on an utterance applies to what is on top of the stack, so the top alone decides what
 happens next.
 
@@ -22,14 +22,18 @@ from cognition import EnumClassifier, IOContainer, Operator, describe_facts
 from pydantic import BaseModel
 
 from logistics_agent.communicator import (
-    DEFAULT_LLM, AgentIntent, AskFor, AskForKind, ConfirmAddition, HumanIntent, NotUnderstood, Utterance, in_context,
+    DEFAULT_LLM, AgentIntent, AskFor, AskForKind, ConfirmChange, HumanIntent, NotUnderstood, Utterance, in_context,
     label,
 )
-from logistics_agent.domain import Action, At, ShippingRequest, Vehicle
+from logistics_agent.domain import (
+    Action, Airport, At, City, RouteReport, RouteType, ShippingRequest, Vehicle, VehicleType,
+)
 from logistics_agent.drafts import build, draft_model, drafted
 from logistics_agent.fill_placement import PlacementFiller
+from logistics_agent.fill_route import RouteFiller
 from logistics_agent.fill_shipping_request import ShippingRequestFiller
 from logistics_agent.fill_vehicle import VehicleFiller
+from logistics_agent.inspect_state import QuestionType, Sighting, StateInspector
 from logistics_agent.planner import LogisticsPlanner
 from logistics_agent.reasoner import Reasoner
 
@@ -85,6 +89,13 @@ class ConversationState:
     vehicle_draft: BaseModel | None = None
     # the draft of where that vehicle is, an At relation with the vehicle as entity1; None until the vehicle is complete
     placement_draft: BaseModel | None = None
+    # the route the human reports blocked: the cities at its ends; None until the human reports one
+    route_report: RouteReport | None = None
+    # the kind of the blocked route, a road or the flights; None while it is not known
+    route_type: RouteType | None = None
+    # the change to the world the agent asked the human to confirm, such as adding a vehicle or closing a route; None
+    # while there is none
+    pending_change: VehicleAddition | RouteClosure | None = None
 
     def __post_init__(self) -> None:
         """the planner plans over the world graph the reasoner maintains"""
@@ -116,10 +127,13 @@ class ConversationState:
         return top if not self.listening and isinstance(top, AskFor | AskForKind) else None
 
     def has(self, ask: AskFor | AskForKind) -> bool:
-        """whether the agent has what the ask asks for: the kind of vehicle once there is a draft of one, and
-        otherwise what the model being filled in, or its draft, has"""
-        if isinstance(ask, AskForKind):
+        """whether the agent has what the ask asks for: the kind of vehicle once there is a draft of one, the kind of
+        route once it is known, and otherwise what the model being filled in, or its draft, has"""
+        if ask == AskForKind(VehicleType):
             return self.vehicle_draft is not None
+        if ask == AskForKind(RouteType):
+            return self.route_type is not None
+        assert isinstance(ask, AskFor), f"the agent does not ask for {ask}"
         return ask.satisfied(self.model_of(ask.model))
 
     def model_of(self, model: type[BaseModel]) -> BaseModel | None:
@@ -129,6 +143,8 @@ class ConversationState:
             return self.shipping_request
         if model is At:
             return self.placement_draft
+        if model is RouteReport:
+            return self.route_report
         assert issubclass(model, Vehicle), f"the agent does not fill in {model.__name__}"
         draft = self.vehicle_draft
         return draft if draft is not None and drafted(draft) is model else None
@@ -137,13 +153,17 @@ class ConversationState:
         """whether the agent has asked for the kind of vehicle to add to the fleet, or the vehicle, and is still waiting
         for it"""
         return any(
-            isinstance(intent, AskForKind) or (isinstance(intent, AskFor) and issubclass(intent.model, Vehicle))
+            intent == AskForKind(VehicleType) or (isinstance(intent, AskFor) and issubclass(intent.model, Vehicle))
             for intent in self.intent_stack
         )
 
+    def asking_for_route(self) -> bool:
+        """whether the agent has asked which route is blocked, or its kind, and is still waiting for it"""
+        return self.asking_for(RouteReport) or AskForKind(RouteType) in self.intent_stack
+
     def confirming(self) -> bool:
-        """whether the agent has asked the human to confirm adding a vehicle, and is waiting for the answer"""
-        return isinstance(self.top, ConfirmAddition)
+        """whether the agent has asked the human to confirm a change to the world, and is waiting for the answer"""
+        return isinstance(self.top, ConfirmChange)
 
     def answered_ask(self) -> AskFor | AskForKind | None:
         """the ask the utterance answers: the agent ends a turn with a question only with its ask on top, so the ask
@@ -415,7 +435,7 @@ class PopSatisfiedAsk(Operator[ConversationState]):
     WHEN: an ask for an attribute, or for the kind of vehicle, is on top, and the agent has what it asked for
     THEN: pop the ask; the one below it is looked at next, so the ask for the whole model is reached once the asks for
           its attributes have popped, and the operator for that model takes it from there: ConfirmShippingRequest,
-          PlaceVehicle, or ProposeAddition
+          PlaceVehicle, ProposeAddition, or ProposeClosure
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
@@ -503,13 +523,18 @@ class ReactToAddToFleetIntent(Operator[ConversationState]):
 
 
 def forget_fleet_addition(state: ConversationState) -> None:
-    """drops the vehicle being added to the fleet and where it is, with every ask for them still on the stack"""
+    """drops the vehicle being added to the fleet and where it is, with every ask for them still on the stack, and
+    the confirmation of adding it, if the agent asked for one"""
+    confirming = isinstance(state.pending_change, VehicleAddition)
     state.intent_stack = [
         intent for intent in state.intent_stack
-        if not isinstance(intent, ConfirmAddition | AskForKind)
+        if intent != AskForKind(VehicleType)
+        and not (confirming and isinstance(intent, ConfirmChange))
         and not (isinstance(intent, AskFor) and (intent.model is At or issubclass(intent.model, Vehicle)))
     ]
     state.vehicle_draft = state.placement_draft = None
+    if confirming:
+        state.pending_change = None
 
 
 class PlaceVehicle(Operator[ConversationState]):
@@ -546,44 +571,270 @@ class ProposeAddition(Operator[ConversationState]):
         return state.on_top(AskFor(At)) and AskFor(At).satisfied(state.placement_draft)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """swaps the ask for the placement for the confirmation"""
+        """swaps the ask for the placement for the confirmation of adding the vehicle there"""
+        assert state.placement_draft is not None
+        state.pending_change = VehicleAddition(build(state.placement_draft))
         state.pop(AskFor(At))
-        state.push(ConfirmAddition())
+        state.push(ConfirmChange())
 
 
-def addition(state: ConversationState) -> tuple[Vehicle, Any]:
-    """the vehicle being added to the fleet, and where it is"""
-    assert state.placement_draft is not None
-    placement = build(state.placement_draft)
-    return placement.entity1, placement.entity2
+@dataclass(frozen=True)
+class VehicleAddition:
+    """a change the agent asks the human to confirm: adding a vehicle to the fleet, where it is"""
+
+    # where the vehicle is: an At relation from the new vehicle to a terminal or airport
+    placement: At
+
+    @property
+    def question(self) -> str:
+        """what the agent asks the human to confirm"""
+        vehicle, place = self.placement.entity1, self.placement.entity2
+        return (
+            f"Shall I add {vehicle.display_name}, a {vehicle.model} {type(vehicle).__name__.lower()} that carries up "
+            f"to {vehicle.max_payload:,g} lb, at {label(place)}, to the fleet?"
+        )
+
+    def make(self, state: ConversationState) -> str:
+        """adds the vehicle, and the At relation the human described for where it is; returns what to tell them"""
+        state.reasoner.add_entity(self.placement.entity1)
+        state.reasoner.add_relation(self.placement)
+        return f"Added {self.placement.entity1.display_name} to the fleet, at {label(self.placement.entity2)}."
+
+    def declined(self) -> str:
+        """what to tell the human when they say no"""
+        return f"OK, I did not add {self.placement.entity1.display_name} to the fleet."
+
+    def forget(self, state: ConversationState) -> None:
+        """drops everything the agent kept for the addition"""
+        forget_fleet_addition(state)
 
 
-class AskToConfirmAddition(Operator[ConversationState]):
+# === closing blocked routes
+
+
+class ReactToObstructRouteIntent(Operator[ConversationState]):
     """
-    WHEN: ConfirmAddition is on top: the agent has the vehicle to add and where it is, and the human has not answered
-          whether to add it
-    THEN: end the turn by saying the partial responses and asking whether to add the vehicle there; ConfirmAddition
-          stays on the stack until the human says yes or no
+    WHEN: OBSTRUCT_ROUTE is on top: the human reports a route blocked, or says which route or which kind it is
+    THEN: fill in the route with the RouteFiller sub-process: the one being asked for, or else a new one; pop the
+          intent, and ask for the route, with the asks for what is missing above
+    """
+
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        """sets up the sub-process once; it is restarted for every utterance"""
+        super().__init__(name, **kwargs)
+        self._route_filler = RouteFiller()
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with OBSTRUCT_ROUTE on top"""
+        return state.on_top(HumanIntent.OBSTRUCT_ROUTE)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """takes the report and the kind the sub-process fills in, pops the intent, and pushes the asks so the first
+        is on top"""
+        answering = state.answered_ask()
+        state.pop(HumanIntent.OBSTRUCT_ROUTE)
+        if not state.asking_for_route():
+            forget_route_report(state)
+        sub_process = self._route_filler
+        sub_process.reinit()
+        result = sub_process(
+            utterance=state.human_utterance, answering=answering, reasoner=state.reasoner,
+            report=state.route_report or RouteReport(), kind=state.route_type, suppress_errors=False,
+        )
+        assert result is not None and result.report is not None and result.asks is not None
+        state.route_report, state.route_type = result.report, result.kind
+        for ask in [AskFor(RouteReport), *reversed(result.asks)]:
+            state.push(ask)
+
+
+def forget_route_report(state: ConversationState) -> None:
+    """drops the route reported blocked and its kind, with every ask for them still on the stack, and the confirmation
+    of closing it, if the agent asked for one"""
+    confirming = isinstance(state.pending_change, RouteClosure)
+    state.intent_stack = [
+        intent for intent in state.intent_stack
+        if intent != AskForKind(RouteType)
+        and not (confirming and isinstance(intent, ConfirmChange))
+        and not (isinstance(intent, AskFor) and intent.model is RouteReport)
+    ]
+    state.route_report, state.route_type = None, None
+    if confirming:
+        state.pending_change = None
+
+
+def blocked_route(state: ConversationState) -> Any:
+    """the route of the kind between the two cities reported, in either direction, as the world graph has it: the
+    road between the cities, or the air route between their airports; None when there is none"""
+    report, kind = state.route_report, state.route_type
+    assert report is not None and report.city1 is not None and report.city2 is not None and kind is not None
+    ends = [report.city1, report.city2]
+    if kind is RouteType.AIR:
+        airports = state.reasoner.find_entities(Airport)
+        ends = [next((airport for airport in airports if airport.city.name == city.name), city) for city in ends]
+    for one, other in (ends, ends[::-1]):
+        found = state.reasoner.find_relations(kind.model, one.name, other.name)
+        if found:
+            return found[0]
+    return None
+
+
+def route_phrase(kind: RouteType, city1: City, city2: City) -> str:
+    """how the agent refers to the route: the road, or the flights, between the two cities"""
+    what = "road" if kind is RouteType.ROAD else "flights"
+    return f"the {what} between {city1.display_name} and {city2.display_name}"
+
+
+class ProposeClosure(Operator[ConversationState]):
+    """
+    WHEN: the ask for the whole route report is on top, both cities are known, and so is the kind of route
+    THEN: pop the ask; when the world graph has such a route, ask the human to confirm closing it, and otherwise note
+          that there is no such route and drop the report
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
-        """applies with ConfirmAddition on top"""
-        return state.on_top(ConfirmAddition())
+        """applies with the satisfied ask for the whole report on top, once the kind is known"""
+        return (
+            state.on_top(AskFor(RouteReport))
+            and AskFor(RouteReport).satisfied(state.route_report)
+            and state.route_type is not None
+        )
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """says the partial responses and the question, and listens for the answer"""
-        vehicle, place = addition(state)
-        state.say(io, asking=(
-            f"Shall I add {vehicle.display_name}, a {vehicle.model} {type(vehicle).__name__.lower()} that carries up "
-            f"to {vehicle.max_payload:,g} lb, at {label(place)}, to the fleet?"
-        ))
+        """swaps the ask for the report for the confirmation of closing the route, when there is one"""
+        report, kind = state.route_report, state.route_type
+        assert report is not None and report.city1 is not None and report.city2 is not None and kind is not None
+        state.pop(AskFor(RouteReport))
+        route = blocked_route(state)
+        if route is None:
+            state.partial_responses.append(
+                f"I don't know of {route_phrase(kind, report.city1, report.city2)}, so there is nothing to close."
+            )
+            forget_route_report(state)
+            return
+        state.pending_change = RouteClosure(route, kind, report.city1, report.city2)
+        state.push(ConfirmChange())
+
+
+@dataclass(frozen=True)
+class RouteClosure:
+    """a change the agent asks the human to confirm: closing a blocked route, so deliveries are planned around it"""
+
+    # the route as the world graph has it, a TruckRoute or an AirRoute
+    route: Any
+    kind: RouteType
+    # the cities the human named, at the ends of the route
+    city1: City
+    city2: City
+
+    @property
+    def question(self) -> str:
+        """what the agent asks the human to confirm"""
+        return f"Shall I close {route_phrase(self.kind, self.city1, self.city2)}?"
+
+    def make(self, state: ConversationState) -> str:
+        """removes the route from the world graph; returns what to tell the human"""
+        state.reasoner.remove_relation(self.kind.model, self.route.entity1.name, self.route.entity2.name)
+        return f"Closed {route_phrase(self.kind, self.city1, self.city2)}; I will plan deliveries around it."
+
+    def declined(self) -> str:
+        """what to tell the human when they say no"""
+        return f"OK, I left {route_phrase(self.kind, self.city1, self.city2)} open."
+
+    def forget(self, state: ConversationState) -> None:
+        """drops everything the agent kept for the closure"""
+        forget_route_report(state)
+
+
+# === answering questions about the state of the world
+
+
+class ReactToInspectStateIntent(Operator[ConversationState]):
+    """
+    WHEN: INSPECT_STATE is on top: the human asked about the state of the world, such as which vehicles the fleet has
+    THEN: answer it with the StateInspector sub-process, which looks the facts up in the world graph; note the answer,
+          worded from the facts, or that the agent cannot answer that kind of question; pop the intent
+    """
+
+    CANNOT_ANSWER = "Sorry, I can only answer questions about the fleet: which vehicles it has, and where they are."
+
+    def __init__(self, name: str, **kwargs: Any) -> None:
+        """sets up the sub-process once; it is restarted for every question"""
+        super().__init__(name, **kwargs)
+        self._state_inspector = StateInspector()
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with INSPECT_STATE on top"""
+        return state.on_top(HumanIntent.INSPECT_STATE)
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """runs a fresh sub-process over the question, notes its answer, and pops the intent"""
+        answering = state.answered_ask()
+        sub_process = self._state_inspector
+        sub_process.reinit()
+        result = sub_process(
+            utterance=state.human_utterance, answering=answering, reasoner=state.reasoner, suppress_errors=False
+        )
+        assert result is not None
+        if result.question_type is QuestionType.FLEET:
+            assert result.fleet_question is not None and result.sightings is not None
+            state.partial_responses.append(fleet_answer(result.fleet_question.kind, result.sightings))
+        else:
+            state.partial_responses.append(self.CANNOT_ANSWER)
+        state.pop(HumanIntent.INSPECT_STATE)
+
+
+def with_article(noun: str) -> str:
+    """the noun with a or an in front, as it sounds, such as "a truck" or "an airplane" """
+    return f"{'an' if noun[:1].lower() in 'aeiou' else 'a'} {noun}"
+
+
+def kind_of(vehicle: Vehicle) -> VehicleType:
+    """the type of the vehicle; the world graph gives back frozen copies of the vehicles, whose class is not the
+    model, so the type is the one whose model the vehicle is an instance of"""
+    return next(kind for kind in VehicleType if isinstance(vehicle, kind.model))
+
+
+def fleet_answer(kind: VehicleType | None, sightings: list[Sighting]) -> str:
+    """the answer to a question about the fleet, or the vehicles of one kind in it, worded from the facts: how many
+    there are, then each with its make and model, its payload, and where it is"""
+    one = "vehicle" if kind is None else kind.value
+    if not sightings:
+        return f"The fleet has no {one}s."
+    vehicles = "; ".join(
+        f"{v.display_name} ({v.model}), {with_article(kind_of(v).value)} that carries up to {v.max_payload:,g} lb, "
+        f"at {label(place) if place is not None else 'a place I do not know'}"
+        for v, place in ((sighting.vehicle, sighting.place) for sighting in sightings)
+    )
+    count = f"{len(sightings)} {one}" if len(sightings) == 1 else f"{len(sightings)} {one}s"
+    return f"The fleet has {count}: {vehicles}."
+
+
+# === confirming changes to the world
+
+
+class AskToConfirmChange(Operator[ConversationState]):
+    """
+    WHEN: ConfirmChange is on top: the agent has a change to make to the world, and the human has not answered whether
+          to make it
+    THEN: end the turn by saying the partial responses and asking whether to make the change; ConfirmChange stays on
+          the stack until the human says yes or no
+    """
+
+    def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
+        """applies with ConfirmChange on top"""
+        return state.on_top(ConfirmChange())
+
+    def perform(self, state: ConversationState, io: IOContainer) -> None:
+        """says the partial responses and the change's question, and listens for the answer"""
+        assert state.pending_change is not None
+        state.say(io, asking=state.pending_change.question)
 
 
 class ReactToConfirmIntent(Operator[ConversationState]):
     """
     WHEN: CONFIRM is on top: the human said yes
-    THEN: pop it; when the agent asked whether to add a vehicle, add it to the world graph where it is, note that it
-          was added, and pop ConfirmAddition; a yes to nothing is let go
+    THEN: pop it; when the agent asked whether to make a change, make it, note what was done, pop ConfirmChange, and
+          drop what was kept for the change; a yes to nothing is let go
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
@@ -591,22 +842,22 @@ class ReactToConfirmIntent(Operator[ConversationState]):
         return state.on_top(HumanIntent.CONFIRM)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """adds the vehicle when there is one to confirm"""
+        """makes the change when there is one to confirm"""
         state.pop(HumanIntent.CONFIRM)
         if not state.confirming():
             return
-        vehicle, place = addition(state)
-        state.reasoner.add_entity(vehicle, location=place.name)
-        state.partial_responses.append(f"Added {vehicle.display_name} to the fleet, at {label(place)}.")
-        state.pop(ConfirmAddition())
-        forget_fleet_addition(state)
+        change = state.pending_change
+        assert change is not None
+        state.partial_responses.append(change.make(state))
+        state.pop(ConfirmChange())
+        change.forget(state)
 
 
 class ReactToDenyIntent(Operator[ConversationState]):
     """
     WHEN: DENY is on top: the human said no
-    THEN: pop it; when the agent asked whether to add a vehicle, drop the vehicle, note that it was not added, and pop
-          ConfirmAddition; a no to nothing is let go
+    THEN: pop it; when the agent asked whether to make a change, note that it was not made, pop ConfirmChange, and drop
+          what was kept for the change; a no to nothing is let go
     """
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
@@ -614,14 +865,15 @@ class ReactToDenyIntent(Operator[ConversationState]):
         return state.on_top(HumanIntent.DENY)
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
-        """drops the vehicle when there is one to confirm"""
+        """drops the change when there is one to confirm"""
         state.pop(HumanIntent.DENY)
         if not state.confirming():
             return
-        vehicle, _ = addition(state)
-        state.partial_responses.append(f"OK, I did not add {vehicle.display_name} to the fleet.")
-        state.pop(ConfirmAddition())
-        forget_fleet_addition(state)
+        change = state.pending_change
+        assert change is not None
+        state.partial_responses.append(change.declined())
+        state.pop(ConfirmChange())
+        change.forget(state)
 
 
 # === estimating prices
@@ -674,6 +926,7 @@ class PlanDelivery(Operator[ConversationState]):
         planner.set_goal([At(entity1=request.shipment, entity2=request.destination)])
         try:
             state.plan, state.price = planner.plan()
+            #print(state.plan)
         except RuntimeError:
             state.plan, state.price = None, None
         finally:
@@ -690,7 +943,7 @@ class DescribePlan(Operator[ConversationState]):
 
     TASK_DESC = (
         "a logistics support agent tells a human how their shipment would be delivered;"
-        "describe the steps as an itemized list in the order they happen, naming vehicles, places, and what each step costs"
+        "describe all the steps as an itemized list in the order they happen, naming vehicles, places, and what each step costs"
     )
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
@@ -709,6 +962,7 @@ class DescribePlan(Operator[ConversationState]):
         if state.plan is None or state.price is None:
             state.partial_responses.append(f"Sorry, I could not find a way to deliver {delivery}.")
         else:
+            #print(len(state.plan))
             steps = describe_facts(state.plan, self.TASK_DESC, DEFAULT_LLM)
             state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}. \n \n {steps}")
         state.planned = False

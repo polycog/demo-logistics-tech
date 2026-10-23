@@ -184,7 +184,7 @@ class ComposeAsks(Operator[VehicleState]):
     def perform(self, state: VehicleState, io: IOContainer) -> None:
         """records the asks"""
         if state.draft is None:
-            state.asks = [AskForKind()]
+            state.asks = [AskForKind(VehicleType)]
         else:
             state.asks = [AskFor(drafted(state.draft), name) for name in missing(state.draft)]
 

@@ -122,6 +122,8 @@ misunderstanding.
 | What the agent can do | "what can you do?" |
 | Acknowledge the agent | "thanks" (the agent replies and repeats any question it was waiting on); "ok", "got it" (the agent says nothing) |
 | Add a vehicle to the fleet | "add a new truck called Road Runner" (the agent asks for what it still needs, then where the vehicle is, and asks you to confirm before adding it) |
+| Ask about the fleet | "which trucks do you have?", "what is in your fleet?" (the agent lists the vehicles, each with its make and model, payload, and where it is, from the world graph) |
+| Report a blocked route | "the route between Seattle and San Francisco is snowed in" (the agent works out whether it is the road or the flights, asking if it can't tell, and asks you to confirm before closing it; deliveries are then planned around it) |
 | Stop | "quit", "exit", "bye" |
 
 ## The world
@@ -134,8 +136,8 @@ Five cities — Seattle, San Francisco, Boston, Denver, and Detroit — each wit
 - **Shipments** move only by being loaded into a vehicle. Loading and unloading cost the shipment's weight times the
   labor rate in that city.
 
-At the start, Big Bertha and The Pelican (an airplane) are at Seattle-Tacoma airport, and Little Rocket is at San
-Francisco airport. There are no shipments at the start, and a shipment is wherever you say it is. The planner searches for the cheapest
+At the start, Big Bertha (a truck) is at Seattle Terminal, Little Rocket (a truck) is at San Francisco Terminal, and
+The Pelican (an airplane) is at Seattle-Tacoma airport. There are no shipments at the start, and a shipment is wherever you say it is. The planner searches for the cheapest
 sequence of drives, flights, loads, and unloads that reaches the goal.
 
 ## How it works
@@ -164,6 +166,8 @@ CITATION.cff       how to cite this repository
 | `planner.py` | The search planner: what each action does to the world, and the search for the cheapest plan. |
 | `fill_vehicle.py` | The sub-process that fills in a vehicle to add to the fleet: its kind, classified among the `VehicleType`s, then its fields, all at once. |
 | `fill_placement.py` | The sub-process that fills in where a vehicle being added is: an `At` relation to an existing terminal or airport (only airports for an airplane). |
+| `fill_route.py` | The sub-process that fills in which route the human reports blocked: the cities at its ends, and whether it is the road or the flights, classified from what blocks it. |
+| `inspect_state.py` | The sub-process that answers questions about the state of the world, such as which vehicles the fleet has: the language model classifies the question and fills in what it is about, and the reasoner looks the facts up. |
 | `drafts.py` | Drafts of models whose fields are all required, such as a truck, filled in over several turns and built once nothing is missing. |
 | `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles (all tagged `FLEET`, and the `VehicleType`s the human can add), shipments, routes, costs, actions, and the shipping request (a shipment, the location it is sent from, and the location it goes to). The docstrings and field descriptions of what the agent fills in are the questions it asks for them. |
 
@@ -195,7 +199,9 @@ filler generic in `cognition`.
 
 Adding a vehicle to the fleet uses the same stack: the agent fills in the vehicle, then where it is, then asks the
 human to confirm before it changes the world graph. Its design is in
-[`design-docs/fleet-updates.md`](design-docs/fleet-updates.md).
+[`design-docs/fleet-updates.md`](design-docs/fleet-updates.md). Reporting a blocked route works the same way, and closes
+the route once the human confirms: [`design-docs/route-closures.md`](design-docs/route-closures.md). Questions about
+the state of the world are answered from the world graph: [`design-docs/state-inspection.md`](design-docs/state-inspection.md).
 
 The language model never decides facts or prices — it only translates between the human and the graph.
 

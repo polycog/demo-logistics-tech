@@ -10,7 +10,7 @@ from logistics_agent.console import Console
 from logistics_agent.conductor import (
     Acknowledge,
     AskQuestion,
-    AskToConfirmAddition,
+    AskToConfirmChange,
     ConfirmShippingRequest,
     ConversationState,
     DescribePlan,
@@ -19,12 +19,15 @@ from logistics_agent.conductor import (
     PlanDelivery,
     PopSatisfiedAsk,
     ProposeAddition,
+    ProposeClosure,
     ReactToAddToFleetIntent,
     ReactToAskCapabilitiesIntent,
     ReactToConfirmIntent,
     ReactToDenyIntent,
     ReactToEstimatePriceIntent,
     ReactToGreetingIntent,
+    ReactToInspectStateIntent,
+    ReactToObstructRouteIntent,
     ReactToShippingRequestIntent,
     RecognizeIntent,
     Reply,
@@ -39,6 +42,8 @@ PROCESS_LABELS = {
     "ShippingRequestFiller": "fill_shipping_request",
     "VehicleFiller": "fill_vehicle",
     "PlacementFiller": "fill_placement",
+    "RouteFiller": "fill_route",
+    "StateInspector": "inspect_state",
 }
 # the decision process the planner searches with, whose steps are counted on the spinner instead of shown one by one
 SEARCH_PROCESS = "BaseDecisionProcess"
@@ -120,11 +125,17 @@ def build_decision_process() -> tuple[DecisionProcess[ConversationState], Conver
     # taking shipping requests
     dp.add_operator(ReactToShippingRequestIntent("react_to_shipping_request_intent"))
     dp.add_operator(ConfirmShippingRequest("confirm_shipping_request"))
-    # adding vehicles to the fleet, once the human confirms
+    # adding vehicles to the fleet
     dp.add_operator(ReactToAddToFleetIntent("react_to_add_to_fleet_intent"))
     dp.add_operator(PlaceVehicle("place_vehicle"))
     dp.add_operator(ProposeAddition("propose_addition"))
-    dp.add_operator(AskToConfirmAddition("ask_to_confirm_addition", terminal=True))
+    # closing blocked routes
+    dp.add_operator(ReactToObstructRouteIntent("react_to_obstruct_route_intent"))
+    dp.add_operator(ProposeClosure("propose_closure"))
+    # answering questions about the state of the world
+    dp.add_operator(ReactToInspectStateIntent("react_to_inspect_state_intent"))
+    # confirming a change to the world before making it
+    dp.add_operator(AskToConfirmChange("ask_to_confirm_change", terminal=True))
     dp.add_operator(ReactToConfirmIntent("react_to_confirm_intent"))
     dp.add_operator(ReactToDenyIntent("react_to_deny_intent"))
     # estimating prices

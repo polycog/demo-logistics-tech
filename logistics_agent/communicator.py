@@ -11,7 +11,7 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from logistics_agent.domain import Airplane, Airport, City, GasPrice, LaborCost, Terminal, Shipment, Truck, VehicleType
+from logistics_agent.domain import Airplane, Airport, City, GasPrice, LaborCost, Terminal, Shipment, Truck
 
 # the config lives at the root of the repository, next to pyproject.toml
 LLM_CONFIG = Path(__file__).resolve().parent.parent / "llm_config.toml"
@@ -77,6 +77,16 @@ class HumanIntent(DocEnum):
         "deny",
         "human says no, declines, or tells the agent not to go ahead",
     )
+    INSPECT_STATE = (
+        "inspect_state",
+        "human asks about the carrier's fleet: which vehicles it has, such as its trucks or airplanes, and where they "
+        "are",
+    )
+    OBSTRUCT_ROUTE = (
+        "obstruct_route",
+        "human reports that a route between two cities is blocked or can't be used, such as a road snowed in or "
+        "flooded, a bridge out, or flights grounded, or says which route or which cities it is",
+    )
 
 
 @dataclass(frozen=True)
@@ -92,21 +102,24 @@ class NotUnderstood(AgentIntent):
 
 
 @dataclass(frozen=True)
-class ConfirmAddition(AgentIntent):
-    """the agent has the vehicle to add to the fleet and where it is, and asks the human to confirm before it adds
-    it; the human's yes or no answers it"""
+class ConfirmChange(AgentIntent):
+    """the agent has a change to make to the world, such as adding a vehicle to the fleet or closing a route, and asks
+    the human to confirm before it makes it; the human's yes or no answers it"""
 
 
 @dataclass(frozen=True)
 class AskForKind(AgentIntent):
-    """the agent asks which kind of vehicle the human wants to add to the fleet; the question is VehicleType's own
-    docstring, and the ask is satisfied once the agent has a vehicle of a kind to fill in"""
+    """the agent asks which kind of thing the human means, among the members of a DocEnum, such as a truck or an
+    airplane; the question is the enum's own docstring"""
+
+    # the kinds to choose among, such as VehicleType or RouteType
+    kinds: type[DocEnum]
 
     @property
     def question(self) -> str:
         """what the agent asks the human"""
-        assert VehicleType.__doc__ is not None
-        return VehicleType.__doc__.strip()
+        assert self.kinds.__doc__ is not None
+        return self.kinds.__doc__.strip()
 
 
 @dataclass(frozen=True)

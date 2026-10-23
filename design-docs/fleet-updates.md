@@ -49,7 +49,7 @@ A new kind of vehicle needs a model and a `VehicleType` member.
 **Questions come from the model,** as for the shipping request:
 - The vehicles' `Field` descriptions are written as questions ("What make and model is the vehicle?").
 - So is `At.entity2` ("Where is it now: which terminal or airport?").
-- The kind is asked with `VehicleType`'s own docstring, through the `AskForKind` agent intent.
+- The kind is asked with `VehicleType`'s own docstring, through the `AskForKind(VehicleType)` agent intent.
 
 ## Drafts
 
@@ -77,7 +77,7 @@ or `None` before the kind is known).
 | `TakeDraft` | the draft has not been taken | copy the conductor's draft, if any, and note its missing fields |
 | `ChooseKind` | no draft, and the kind not tried on this utterance | classify the kind with an `EnumClassifier` over `VehicleType`, with the question asked as context, so it can only be one of them; start a draft of its model, named with `reasoner.fresh_name(model.name_prefix)`, such as `truck3` |
 | `ExtractFields` | a draft with missing fields, not extracted yet | fill in the missing fields together; keep text that is not blank and numbers above zero |
-| `ComposeAsks` | the utterance has been used | ask for the kind (`AskForKind`) if there is still no draft; otherwise ask for each missing field, in order |
+| `ComposeAsks` | the utterance has been used | ask for the kind (`AskForKind(VehicleType)`) if there is still no draft; otherwise ask for each missing field, in order |
 
 The agent names the vehicle itself, so `name` is never asked.
 
@@ -94,16 +94,20 @@ those places afterwards (`location_named`), so it can only pick a real one.
 The conductor keeps `vehicle_draft` and `placement_draft` in its state. `model_of` maps each model the agent asks for
 to them: a `Vehicle` model to the vehicle draft, and `At` to the placement draft. `ConversationState.has(ask)` says
 whether the agent has what an ask asks for: the kind once there is a vehicle draft, and otherwise what `AskFor`'s
-`satisfied` says of the draft. `PopSatisfiedAsk` pops `AskForKind` once it has, and `AskQuestion` asks it until then.
+`satisfied` says of the draft. `PopSatisfiedAsk` pops `AskForKind(VehicleType)` once it has, and `AskQuestion` asks it
+until then.
 
 | Top of the stack | Operator | Then |
 | --- | --- | --- |
 | `ADD_TO_FLEET` | `ReactToAddToFleetIntent` | if the utterance answers where the vehicle is, run `PlacementFiller`; otherwise run `VehicleFiller`, continuing the vehicle being asked for or starting a new one. Pop the intent, then push the ask for the whole vehicle (or placement) with the asks for what is missing above it |
 | `AskFor(Truck)` or `AskFor(Airplane)`, complete | `PlaceVehicle` | build the vehicle, start a draft of its `At` relation, and push `AskFor(At)` and `AskFor(At, "entity2")` |
-| `AskFor(At)`, complete | `ProposeAddition` | swap the ask for `ConfirmAddition` |
-| `ConfirmAddition` | `AskToConfirmAddition` | ask "Shall I add …?" and end the turn; it stays on the stack until a yes or no |
-| `CONFIRM` | `ReactToConfirmIntent` | if `ConfirmAddition` is under it, add the vehicle with `reasoner.add_entity(vehicle, location=...)`, say so, and forget the addition; a yes to nothing is let go |
-| `DENY` | `ReactToDenyIntent` | if `ConfirmAddition` is under it, say the vehicle was not added, and forget the addition; a no to nothing is let go |
+| `AskFor(At)`, complete | `ProposeAddition` | build the placement, keep it as the pending change, a `VehicleAddition`, and swap the ask for `ConfirmChange` |
+| `ConfirmChange` | `AskToConfirmChange` | ask the pending change's question ("Shall I add …?") and end the turn; it stays on the stack until a yes or no |
+| `CONFIRM` | `ReactToConfirmIntent` | if `ConfirmChange` is under it, make the pending change: `VehicleAddition` adds the vehicle with `reasoner.add_entity` and the `At` relation the human described with `reasoner.add_relation`. Say so, and forget the addition; a yes to nothing is let go |
+| `DENY` | `ReactToDenyIntent` | if `ConfirmChange` is under it, say the vehicle was not added, and forget the addition; a no to nothing is let go |
+
+Confirming is shared with closing blocked routes ([route-closures.md](route-closures.md)): the pending change knows its
+question, how to make itself, what to say when declined, and what to forget afterwards.
 
 Attribute asks are popped by `PopSatisfiedAsk` and asked by `AskQuestion`, as for the shipping request.
 
@@ -115,7 +119,7 @@ used: the agent asks for it once the vehicle is done.
 **Starting over.** A request to add a vehicle while the agent is not asking for one drops any addition that was not
 finished, with every ask for it still on the stack (`forget_fleet_addition`).
 
-**Yes and no.** `CONFIRM` and `DENY` are human intents like any other. While `ConfirmAddition` is on top, "ok", "great"
+**Yes and no.** `CONFIRM` and `DENY` are human intents like any other. While `ConfirmChange` is on top, "ok", "great"
 and the other acknowledgements are classified as an answer, not let go silently by `Acknowledge`. Something else, such
 as a greeting, is answered, and then the confirmation question is asked again.
 

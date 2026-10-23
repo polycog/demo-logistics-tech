@@ -110,6 +110,25 @@ class AirRoute(BinaryRelation):
     entity2: Airport = Field(frozen=True)
     price: int = Field(description="cost of flying the route, in US dollars")
 
+class RouteType(DocEnum):
+    """Is it the road or the flights between the two cities that are blocked?"""
+
+    ROAD = ("road", "the road between two cities, driven by trucks: blocked by snow, ice, flooding, a closed highway "
+                    "or bridge, or an accident")
+    AIR = ("air", "the flights between two cities' airports: blocked by grounded flights, a closed airport, or a storm")
+
+    @property
+    def model(self) -> type["TruckRoute | AirRoute"]:
+        """the model of routes of the type"""
+        return {RouteType.ROAD: TruckRoute, RouteType.AIR: AirRoute}[self]
+
+
+# the docstring and the field descriptions are the questions the agent asks the human about a blocked route
+class RouteReport(BaseModel):
+    """Which route is blocked: between which two cities?"""
+    city1: City | None = Field(default=None, description="Which city is at one end of the blocked route?")
+    city2: City | None = Field(default=None, description="Which city is at the other end of the blocked route?")
+
 class At(BinaryRelation):
     """where a shipment or vehicle currently is
 
