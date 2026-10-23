@@ -191,6 +191,10 @@ For example, asking for a price before describing the delivery, then leaving out
 | "200 pounds of books from Seattle" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)`, `AskFor(ShippingRequest, "destination")` |
 | "Denver" | both asks pop, the delivery is planned and priced, and `ESTIMATE_PRICE` pops: empty |
 
+Every operator of the conductor, and what is on top of the stack when it applies:
+
+![The conductor's operators](design-docs/figures/conductor.svg)
+
 `ShippingRequestFiller` fills in the parts missing from the shipping request together, in one call to the language
 model, so each thing the human mentions fills in one part only. The detailed design is in
 [`design-docs/model-filler.md`](design-docs/model-filler.md): the sub-process, how the conductor asks for missing

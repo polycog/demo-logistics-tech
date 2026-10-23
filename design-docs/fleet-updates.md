@@ -69,6 +69,8 @@ needs together, in one call to the language model.
 
 ### `VehicleFiller` (`fill_vehicle.py`)
 
+![VehicleFiller's operators](figures/vehicle-filler.svg)
+
 Inputs on `io.a`: `utterance`, `answering` (the ask the utterance answers), `reasoner`, and `draft` (the draft so far,
 or `None` before the kind is known).
 
@@ -82,6 +84,8 @@ or `None` before the kind is known).
 The agent names the vehicle itself, so `name` is never asked.
 
 ### `PlacementFiller` (`fill_placement.py`)
+
+![PlacementFiller's operators](figures/placement-filler.svg)
 
 Inputs on `io.a`: `utterance`, `answering`, `reasoner`, and `draft`, a draft of `At` with the new vehicle as `entity1`.
 

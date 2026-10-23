@@ -40,6 +40,8 @@ part means.
 
 ## The sub-process: `ShippingRequestFiller`
 
+![ShippingRequestFiller's operators](figures/shipping-request-filler.svg)
+
 ### Inputs
 
 The conductor restarts the sub-process for every utterance about a delivery. Its operators read these arguments

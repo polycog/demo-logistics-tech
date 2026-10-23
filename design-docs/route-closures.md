@@ -53,6 +53,8 @@ Its fields are optional, so like `ShippingRequest` it is filled in directly, wit
 
 ## `RouteFiller` (`fill_route.py`)
 
+![RouteFiller's operators](figures/route-filler.svg)
+
 Inputs on `io.a`: `utterance`, `answering` (the ask the utterance answers), `reasoner`, `report` (the `RouteReport` so
 far), and `kind` (the `RouteType`, or `None`).
 

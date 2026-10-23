@@ -39,6 +39,8 @@ them up in the same world graph.
 
 ## `StateInspector` (`inspect_state.py`)
 
+![StateInspector's operators](figures/state-inspector.svg)
+
 Inputs on `io.a`: `utterance`, `answering` (the ask the utterance answers, whose question is given as context), and
 `reasoner`.
 
