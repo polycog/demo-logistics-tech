@@ -12,6 +12,8 @@ within one turn, the operators that do the work write partial responses instead 
 the turn ends with one reply that says them
 """
 
+from __future__ import annotations
+
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
