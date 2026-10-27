@@ -66,12 +66,18 @@ BOOKS_CONFIRMATION = (
     "Got it: the box of books (200 lb) from Seattle to Denver. Ask me what it costs whenever you are ready."
 )
 BOOKS_PRICE_REPLY = (
-    "Delivering the box of books from Seattle to Denver costs $1,112.00. \n \n "
-    "DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
+    "Delivering the box of books from Seattle to Denver costs $1,310.00.\n\n"
+    "1. Big Bertha drives from Seattle Terminal to Seattle ($50.00)\n"
+    "2. Load the box of books onto Big Bertha at Seattle ($120.00)\n"
+    "3. Big Bertha drives long-distance from Seattle to Denver ($1,040.00)\n"
+    "4. Unload the box of books from Big Bertha at Denver ($100.00)"
 )
 PRICE_REPLY = (
-    "Delivering the pallet of office chairs from Seattle to San Francisco "
-    "costs $802.00. \n \n DriveLocalAction, LoadAction, DriveLongDistanceAction, UnloadAction"
+    "Delivering the pallet of office chairs from Seattle to San Francisco costs $1,810.00.\n\n"
+    "1. Big Bertha drives from Seattle Terminal to Seattle ($50.00)\n"
+    "2. Load the pallet of office chairs onto Big Bertha at Seattle ($480.00)\n"
+    "3. Big Bertha drives long-distance from Seattle to San Francisco ($640.00)\n"
+    "4. Unload the pallet of office chairs from Big Bertha at San Francisco ($640.00)"
 )
 QUESTION = "Where is the shipment now?"
 # a delivery described in two parts: the books from Seattle, then where they go
@@ -498,14 +504,13 @@ def test_the_planners_search_steps_are_counted_on_the_spinner_and_other_steps_sh
     ]
 
 
-def test_with_trace_the_planner_and_the_language_model_are_shown_but_not_the_search_step_by_step(chat):
+def test_with_trace_the_planner_is_shown_but_not_the_search_step_by_step(chat):
     shown = "\n".join(chat(SHIPPING, PRICE, "quit", args=("--trace",)))
     assert re.search(
         r"· conductor: plan_delivery\n    · planner: search for the cheapest plan: \d+ search steps, "
         r"\d+ states explored\n",
         shown,
     )
-    assert "· conductor: describe_plan\n    · llm: describe facts" in shown
     assert "BaseDecisionProcess" not in shown
 
 
@@ -764,6 +769,22 @@ def test_acknowledge_waits_until_the_agent_is_listening():
     assert not Acknowledge("acknowledge").can_perform(working_on(), RecordingIO("thanks"))
 
 
+@pytest.mark.parametrize(("ask", "intent"), [
+    (ASK_KIND, HumanIntent.ADD_TO_FLEET), (ASK_TRUCK, HumanIntent.ADD_TO_FLEET),
+    (ASK_TRUCK_PLATE, HumanIntent.ADD_TO_FLEET), (ASK_PLACEMENT, HumanIntent.ADD_TO_FLEET),
+    (ASK_LOCATION, HumanIntent.ADD_TO_FLEET), (ASK_ROUTE, HumanIntent.OBSTRUCT_ROUTE),
+    (ASK_ROUTE_CITY2, HumanIntent.OBSTRUCT_ROUTE), (ASK_ROUTE_KIND, HumanIntent.OBSTRUCT_ROUTE),
+    (ASK_ORIGIN, HumanIntent.SHIPPING_REQUEST), (ASK_DESTINATION, HumanIntent.SHIPPING_REQUEST),
+])
+def test_asked_about_is_what_the_human_wants_that_the_ask_on_top_is_part_of(ask, intent):
+    assert working_on(GREETING, ask).asked_about() is intent
+
+
+@pytest.mark.parametrize("stack", [(), (GREETING,), (ConfirmChange(),)])
+def test_asked_about_is_nothing_without_an_ask_on_top(stack):
+    assert working_on(*stack).asked_about() is None
+
+
 # --- recognize intent
 
 
@@ -801,6 +822,20 @@ def test_recognize_intent_classifies_an_answer_together_with_the_question_asked(
     op.perform(state, RecordingIO(HELLO))
     [(text, _, _)] = op._intent_classifier.calls
     assert text == f'the agent asked: "{QUESTION}" and the human answered: "{HELLO}"'
+
+
+def test_recognize_intent_classifies_an_answer_together_with_what_the_question_is_part_of():
+    """after "Where is it now?" about a truck being added, "Boston terminal" is read as part of adding the truck, not
+    as a delivery"""
+    state = working_on(ASK_LOCATION)
+    state.listen(ASK_LOCATION.question)
+    op = RecognizeIntent("recognize_intent")
+    op.perform(state, RecordingIO(AT_DENVER))
+    [(text, _, _)] = op._intent_classifier.calls
+    assert text == (
+        f"while helping with what the human wants ({HumanIntent.ADD_TO_FLEET.__doc__}), the agent asked: "
+        f'"{ASK_LOCATION.question}" and the human answered: "{AT_DENVER}"'
+    )
 
 
 @pytest.mark.parametrize("phrase", [None, "quit", "ok bye now", "EXIT please", "thanks", "ok"])
@@ -1367,7 +1402,7 @@ def test_confirming_closes_the_road_and_the_planner_plans_around_it():
     assert state.intent_stack == [] and state.route_report is None and state.pending_change is None
     assert state.reasoner.find_relations(TruckRoute, "seattle", "san_francisco") == []
     state.partial_responses.clear()
-    assert estimate(state).price == 845.0, "the pallet of chairs now flies, where it was driven for $802"
+    assert estimate(state).price == 3210.0, "the pallet of chairs now goes by way of Denver, not straight for $1,810"
 
 
 def test_saying_no_leaves_the_road_open():
@@ -1461,7 +1496,7 @@ def no_plan():
 
 def test_plan_delivery_records_the_plan_and_its_cost_as_the_price():
     state = estimate()
-    assert state.price == 802.0 and sum(action.cost for action in state.plan) == state.price
+    assert state.price == 1810.0 and sum(action.cost for action in state.plan) == state.price
     assert isinstance(state.plan[-1], UnloadAction) and state.plan[-1].location.name == "shipping-destination"
 
 
@@ -1507,17 +1542,8 @@ def test_describe_plan_notes_the_price_and_the_description_of_the_plan_and_pops_
     assert state.intent_stack == [GREETING]
 
 
-def test_describe_plan_has_describe_facts_describe_the_plan_with_the_default_llm(fake_language):
-    state = estimate()
-    describe(state)
-    [(facts, task_desc, llm)] = fake_language.calls
-    assert facts == tuple(state.plan) and task_desc == DescribePlan.TASK_DESC and llm is conductor.DEFAULT_LLM
-
-
-def test_describe_plan_does_not_describe_facts_when_no_delivery_could_be_planned(monkeypatch, fake_language):
-    state = ConversationState()
-    monkeypatch.setattr(state.planner, "plan", no_plan)
-    describe(estimate(state))
+def test_describe_plan_describes_the_plan_without_the_language_model(fake_language):
+    describe(estimate())
     assert fake_language.calls == []
 
 

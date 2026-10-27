@@ -26,7 +26,7 @@ from logistics_agent.communicator import (
     label,
 )
 from logistics_agent.domain import (
-    Action, Airport, At, City, RouteReport, RouteType, ShippingRequest, Vehicle, VehicleType,
+    ConceptualAction, Airport, At, City, RouteReport, RouteType, ShippingRequest, Vehicle, VehicleType,
 )
 from logistics_agent.drafts import build, draft_model, drafted
 from logistics_agent.fill_placement import PlacementFiller
@@ -39,7 +39,10 @@ from logistics_agent.reasoner import Reasoner
 
 QUIT_PHRASES = {"quit", "exit", "bye", "goodbye"}
 QUIT_PATTERN = re.compile(rf"\b({'|'.join(QUIT_PHRASES)})\b", re.IGNORECASE)
-INTRODUCTION = "Hi - I am your logistics support agent. I can help you estimate prices for various deliveries."
+INTRODUCTION = (
+    "Hi - I am your logistics support agent. I can estimate what a delivery costs, tell you about your fleet, "
+    "update your fleet, and update your lanes. Ask me what I can do for more."
+)
 
 # utterances that only acknowledge the agent, such as "thanks!" or "ok"; the agent answers thanks, says nothing to the
 # rest, and does not classify either
@@ -82,7 +85,7 @@ class ConversationState:
     planned: bool = False
     # the cheapest actions found that deliver the shipping request; None until it has been planned, or when no
     # delivery could be planned
-    plan: Sequence[Action] | None = None
+    plan: Sequence[ConceptualAction] | None = None
     # what delivering the shipping request costs, in US dollars: the cost of the plan; None whenever plan is None
     price: float | None = None
     # the draft of the vehicle the human is adding to the fleet; None until the kind of vehicle is known
@@ -170,6 +173,19 @@ class ConversationState:
         right under the intent the utterance pushed is the one it answers; None when no ask is there"""
         below_top = self.intent_stack[-2] if len(self.intent_stack) >= 2 else None
         return below_top if isinstance(below_top, AskFor | AskForKind) else None
+
+    def asked_about(self) -> HumanIntent | None:
+        """what the human wants that the question the agent ended its last turn with is part of: adding a vehicle to
+        the fleet, reporting a blocked route, or describing a delivery; None when no ask is on top, such as while the
+        agent waits for a yes or no"""
+        top = self.top
+        if top == AskForKind(VehicleType) or (isinstance(top, AskFor) and issubclass(top.model, Vehicle | At)):
+            return HumanIntent.ADD_TO_FLEET
+        if top == AskForKind(RouteType) or (isinstance(top, AskFor) and top.model is RouteReport):
+            return HumanIntent.OBSTRUCT_ROUTE
+        if isinstance(top, AskFor) and top.model is ShippingRequest:
+            return HumanIntent.SHIPPING_REQUEST
+        return None
 
     def asking_for(self, model: type[BaseModel]) -> bool:
         """whether the agent has asked for the model, or an attribute of it, and is still waiting for it"""
@@ -264,7 +280,8 @@ class RecognizeIntent(Operator[ConversationState]):
     WHEN: the agent is listening, and the human said something other than a quit phrase or an acknowledgement; an
           acknowledgement too while the agent waits for a yes or no to adding a vehicle
     THEN: recognize the intent expressed in it, using an EnumClassifier over the known HumanIntents, and push it onto
-          the intent stack; push NotUnderstood when no known intent matched
+          the intent stack; push NotUnderstood when no known intent matched; an answer to the agent's question is
+          classified together with the question and what the human wants that the question is part of
     """
 
     TASK_DESC = (
@@ -294,8 +311,9 @@ class RecognizeIntent(Operator[ConversationState]):
         assert utterance.phrase is not None
         state.listening = False
         state.human_utterance = utterance
+        about = state.asked_about()
         intent, _confidence = self._intent_classifier(
-            in_context(state.asked, utterance.phrase), DEFAULT_LLM, num_trials=1
+            in_context(state.asked, utterance.phrase, about.__doc__ if about else None), DEFAULT_LLM, num_trials=1
         )
         state.push(NotUnderstood() if intent is None else intent)
 
@@ -346,7 +364,14 @@ class ReactToAskCapabilitiesIntent(Operator[ConversationState]):
     """
 
     REPLY = (
-        "I can estimate what a delivery costs, from where a shipment is picked up to where it is dropped off."
+        "Here is what I can do:\n"
+        "1. Estimate what a delivery costs: tell me where the shipment is picked up, where it is going, and what it is "
+        "and how much it weighs, and I will find the cheapest way to deliver it and walk you through each step.\n"
+        "2. Tell you about your fleet: which trucks and airplanes you have, and where they are.\n"
+        "3. Update your fleet: add a truck or an airplane, with its name, make and model, payload, registration, and "
+        "where it is.\n"
+        "4. Update your lanes: tell me which road or air route between two cities is blocked, and I will plan around "
+        "it."
     )
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
@@ -937,14 +962,9 @@ class PlanDelivery(Operator[ConversationState]):
 class DescribePlan(Operator[ConversationState]):
     """
     WHEN: ESTIMATE_PRICE is on top, and the delivery has been planned
-    THEN: note the price, and a description of the plan's steps written by describe_facts; or note that no delivery
+    THEN: note the price, and the plan's steps each described by its action's template; or note that no delivery
           could be planned; pop the intent
     """
-
-    TASK_DESC = (
-        "a logistics support agent tells a human how their shipment would be delivered;"
-        "describe all the steps as an itemized list in the order they happen, naming vehicles, places, and what each step costs"
-    )
 
     def can_perform(self, state: ConversationState, io: IOContainer) -> bool:
         """applies with ESTIMATE_PRICE on top, once the delivery has been planned"""
@@ -952,7 +972,7 @@ class DescribePlan(Operator[ConversationState]):
 
     def perform(self, state: ConversationState, io: IOContainer) -> None:
         """notes what delivering the shipping request costs, which the agent states itself, and how the shipment
-        would be delivered, which the language model describes from the plan's actions"""
+        would be delivered, as a numbered list of the plan's actions in their templates"""
         request = state.shipping_request
         assert request is not None and request.origin and request.destination and request.shipment
         delivery = (
@@ -962,9 +982,8 @@ class DescribePlan(Operator[ConversationState]):
         if state.plan is None or state.price is None:
             state.partial_responses.append(f"Sorry, I could not find a way to deliver {delivery}.")
         else:
-            #print(len(state.plan))
-            steps = describe_facts(state.plan, self.TASK_DESC, DEFAULT_LLM)
-            state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}. \n \n {steps}")
+            steps = "\n".join(f"{i}. {action}" for i, action in enumerate(state.plan, start=1))
+            state.partial_responses.append(f"Delivering {delivery} costs ${state.price:,.2f}.\n\n{steps}")
         state.planned = False
         state.pop(HumanIntent.ESTIMATE_PRICE)
 

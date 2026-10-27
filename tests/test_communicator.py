@@ -9,6 +9,7 @@ from logistics_agent.communicator import (
     LLM_CONFIG,
     HumanIntent,
     asked_context,
+    in_context,
     known_entities,
     load_llm,
 )
@@ -45,6 +46,17 @@ def test_known_entities_follows_changes_to_the_world():
 def test_asked_context_adds_the_question_only_when_there_is_one():
     assert asked_context(None) == []
     assert asked_context("Where is the shipment now?") == ['the agent had just asked the human: "Where is the shipment now?"']
+
+
+def test_in_context_adds_the_question_and_what_it_is_part_of_only_when_known():
+    assert in_context(None, "Boston terminal", "adding a truck") == "Boston terminal"
+    assert in_context("Where is it now?", "Boston terminal") == (
+        'the agent asked: "Where is it now?" and the human answered: "Boston terminal"'
+    )
+    assert in_context("Where is it now?", "Boston terminal", "adding a truck") == (
+        'while helping with what the human wants (adding a truck), the agent asked: "Where is it now?" and the human '
+        'answered: "Boston terminal"'
+    )
 
 
 # === language model configuration

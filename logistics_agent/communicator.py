@@ -180,12 +180,18 @@ def known_entities(world: WorldGraph) -> list[str]:
     return lines
 
 
-def in_context(asked: str | None, phrase: str) -> str:
+def in_context(asked: str | None, phrase: str, about: str | None = None) -> str:
     """the phrase as a classifier should see it: after the agent asked a question, a short answer such as "denver" is
-    classified together with that question"""
+    classified together with that question, and with what the human wants that the question is part of, if known, so
+    that "Boston terminal" answers where a truck being added is rather than starting a delivery"""
     if asked is None:
         return phrase
-    return f'the agent asked: "{asked}" and the human answered: "{phrase}"'
+    if about is None:
+        return f'the agent asked: "{asked}" and the human answered: "{phrase}"'
+    return (
+        f'while helping with what the human wants ({about}), the agent asked: "{asked}" and the human answered: '
+        f'"{phrase}"'
+    )
 
 
 def asked_context(asked: str | None) -> list[str]:

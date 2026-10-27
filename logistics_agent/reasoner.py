@@ -125,11 +125,11 @@ class Reasoner:
         world.add_entity(GasPrice(name="gas_price", per_mile=0.8))
 
         # handling crews cost more where wages are higher
-        world.add_entity(LaborCost(name="labor_cost_seattle", city=seattle, by_weight=0.06))
-        world.add_entity(LaborCost(name="labor_cost_san_francisco", city=san_francisco, by_weight=0.08))
-        world.add_entity(LaborCost(name="labor_cost_boston", city=boston, by_weight=0.07))
-        world.add_entity(LaborCost(name="labor_cost_denver", city=denver, by_weight=0.05))
-        world.add_entity(LaborCost(name="labor_cost_detroit", city=detroit, by_weight=0.04))
+        world.add_entity(LaborCost(name="labor_cost_seattle", city=seattle, by_weight=0.6))
+        world.add_entity(LaborCost(name="labor_cost_san_francisco", city=san_francisco, by_weight=0.8))
+        world.add_entity(LaborCost(name="labor_cost_boston", city=boston, by_weight=0.7))
+        world.add_entity(LaborCost(name="labor_cost_denver", city=denver, by_weight=0.5))
+        world.add_entity(LaborCost(name="labor_cost_detroit", city=detroit, by_weight=0.4))
 
         return world
 

@@ -5,11 +5,11 @@ from typing import Any, cast, Iterable, Self, Callable, Sequence
 from cognition.reasoning.planning import FrontierManager, PriorityQueue
 from cognition.util.functypes import Predicate, Supplier
 from logistics_agent.domain import GasPrice, LaborCost, Shipment, Vehicle, Truck, Airplane, Location, Terminal, Airport, At, AirRoute, TruckRoute
-from logistics_agent.domain import Action, DriveLocalAction, DriveLongDistanceAction, FlyAction, LoadAction, UnloadAction
+from logistics_agent.domain import ConceptualAction, DriveLocalAction, DriveLongDistanceAction, FlyAction, LoadAction, UnloadAction
 from logistics_agent.domain import ShippingRequest
 
 
-class EvolverDriveTruckLocal(WorldEvolver[WorldSnapshot, Action]):
+class EvolverDriveTruckLocal(WorldEvolver[WorldSnapshot, ConceptualAction]):
     """drive a truck between a terminal and an airport within the same city
 
     when: a truck is at a terminal or airport, and there is another terminal or airport in the same city
@@ -45,7 +45,7 @@ class EvolverDriveTruckLocal(WorldEvolver[WorldSnapshot, Action]):
         return new_state, self.cost
 
 
-class EvolverDriveTruckLongDistance(WorldEvolver[WorldSnapshot, Action]):
+class EvolverDriveTruckLongDistance(WorldEvolver[WorldSnapshot, ConceptualAction]):
     """drive a truck between locations in different cities, where each city has a terminal
 
     when: a truck is at a location in a city with a terminal, and a truck route connects that city to another city
@@ -92,7 +92,7 @@ class EvolverDriveTruckLongDistance(WorldEvolver[WorldSnapshot, Action]):
         return new_state, self.cost
 
 
-class EvolverFlyAirplane(WorldEvolver[WorldSnapshot, Action]):
+class EvolverFlyAirplane(WorldEvolver[WorldSnapshot, ConceptualAction]):
     """fly an airplane between two airports connected by an air route
 
     when: an airplane is at an airport, and an air route connects it to another airport (in either direction)
@@ -135,7 +135,7 @@ def handling_cost(state: WorldSnapshot, shipment: Shipment, location: Location) 
     return shipment.weight * labor.by_weight
 
 
-class EvolverLoadShipment(WorldEvolver[WorldSnapshot, Action]):
+class EvolverLoadShipment(WorldEvolver[WorldSnapshot, ConceptualAction]):
     """load a shipment into a vehicle
 
     when: a vehicle is at a location, and a shipment is at the same location
@@ -171,7 +171,7 @@ class EvolverLoadShipment(WorldEvolver[WorldSnapshot, Action]):
         return new_state, self.cost
 
 
-class EvolverUnloadShipment(WorldEvolver[WorldSnapshot, Action]):
+class EvolverUnloadShipment(WorldEvolver[WorldSnapshot, ConceptualAction]):
     """unload a shipment from a vehicle
 
     when: a vehicle is at a location, and a shipment is in the vehicle
@@ -282,7 +282,7 @@ class LogisticsPlanner():
             return snapshot
         return WorldSnapshot.click(*snapshot.items, *self.current)
 
-    def plan(self) -> tuple[Sequence[Action], float]:
+    def plan(self) -> tuple[Sequence[ConceptualAction], float]:
         planner = SearchPlanner(
                 self.start(),
                 self.create_goal_check(),

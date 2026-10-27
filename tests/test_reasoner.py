@@ -187,5 +187,5 @@ def test_updates_are_seen_by_the_planner():
     _, before = lp.plan()
     reasoner.update_entity(GasPrice(name="gas_price", per_mile=1.0))
     _, after = lp.plan()
-    assert before == pytest.approx(780)
+    assert before == pytest.approx(2040)
     assert after > before

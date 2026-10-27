@@ -196,18 +196,18 @@ def test_load_and_unload_move_the_shipment_through_the_vehicle():
 
     unloaded, cost = moves(EvolverUnloadShipment, loaded)["unload shipment1 from truck1 at terminal_seattle"].then(loaded)
     assert location_of(unloaded, "shipment1") == "terminal_seattle"
-    assert cost == pytest.approx(1000 * 0.06)
+    assert cost == pytest.approx(1000 * 0.6)
 
 
 def test_handling_costs_the_shipment_weight_times_the_city_labor_rate():
-    """the 1000 lb shipment costs 60 to handle in Seattle (0.06 per lb) and 80 in San Francisco (0.08 per lb)"""
+    """the 1000 lb shipment costs 600 to handle in Seattle (0.6 per lb) and 800 in San Francisco (0.8 per lb)"""
     seattle = world_with(("truck1", "terminal_seattle"), ("shipment1", "terminal_seattle")).snapshot
     [load] = EvolverLoadShipment.when(seattle)
-    assert load.then(seattle)[1] == pytest.approx(60)
+    assert load.then(seattle)[1] == pytest.approx(600)
 
     san_francisco = world_with(("truck1", "SFO"), ("shipment1", "truck1")).snapshot
     [unload] = EvolverUnloadShipment.when(san_francisco)
-    assert unload.then(san_francisco)[1] == pytest.approx(80)
+    assert unload.then(san_francisco)[1] == pytest.approx(800)
 
 
 def test_shipment_cannot_be_loaded_into_a_vehicle_elsewhere():
@@ -234,7 +234,7 @@ def test_each_evolver_carries_its_action_model():
     load = moves(EvolverLoadShipment, snapshot)["load shipment1 into truck1 at terminal_seattle"].action
     assert isinstance(load, LoadAction)
     assert (load.shipment.name, load.vehicle.name, load.location.name, load.cost) == (
-        "shipment1", "truck1", "terminal_seattle", 60
+        "shipment1", "truck1", "terminal_seattle", 600
     )
 
 
@@ -246,7 +246,7 @@ def test_action_cost_matches_the_cost_of_the_move():
     unload = next(iter(EvolverUnloadShipment.when(snapshot))).action
     assert isinstance(unload, UnloadAction)
     assert (unload.shipment.name, unload.vehicle.name, unload.location.name, unload.cost) == (
-        "shipment1", "truck1", "terminal_seattle", 60
+        "shipment1", "truck1", "terminal_seattle", 600
     )
 
 
@@ -330,7 +330,7 @@ def test_current_facts_change_where_the_plan_starts():
     [first_load, *_] = [a for a in plan if isinstance(a, LoadAction)]
     assert first_load.location.name == "terminal_denver"
     assert isinstance(plan[-1], UnloadAction) and plan[-1].location.name == "terminal_san_francisco"
-    assert cost > 780
+    assert cost > 2040
 
 
 def test_planner_starts_with_no_goal():
@@ -357,11 +357,11 @@ def test_planner_returns_action_models(planned):
 
 
 def test_planner_finds_the_cheapest_plan(planned):
-    """with handling at 60-80 per move of the 1000 lb shipment, driving straight to San Francisco from the Seattle
-    terminal, where the truck starts (load 60, drive 800 miles 640, unload 80), beats flying, which needs local
+    """with handling at 600-800 per move of the 1000 lb shipment, driving straight to San Francisco from the Seattle
+    terminal, where the truck starts (load 600, drive 800 miles 640, unload 800), beats flying, which needs local
     drives and handles the shipment 3 more times"""
     plan, cost = planned
-    assert cost == pytest.approx(780)
+    assert cost == pytest.approx(2040)
     [drive] = [a for a in plan if isinstance(a, DriveLongDistanceAction)]
     assert (drive.from_location.name, drive.to_location.name) == ("terminal_seattle", "terminal_san_francisco")
 
@@ -391,8 +391,9 @@ def test_goal_check_needs_every_goal_fact():
 
 
 def test_planner_satisfies_every_goal_fact():
-    """the shipment must reach the San Francisco terminal and the airplane must end at SFO, so flying the shipment
-    along (879) beats driving it and flying the airplane empty (830 + 309)"""
+    """the shipment must reach the San Francisco terminal and the airplane must end at SFO; with handling at 600-800
+    per move, driving the shipment (2040) and flying the airplane empty (309) beats flying the shipment along, which
+    handles it 3 more times"""
     world = Reasoner().world
     lp = shipment_in_seattle(LogisticsPlanner(world))
     lp.set_goal([
@@ -403,7 +404,7 @@ def test_planner_satisfies_every_goal_fact():
     [flight] = [a for a in plan if isinstance(a, FlyAction)]
     assert (flight.from_location.name, flight.to_location.name) == ("SEA", "SFO")
     assert isinstance(plan[-1], UnloadAction) and plan[-1].location.name == "terminal_san_francisco"
-    assert cost == pytest.approx(879)
+    assert cost == pytest.approx(2349)
 
 
 def test_the_starting_world_has_no_shipments(starting_world):
@@ -508,8 +509,8 @@ def test_clear_takes_out_what_setup_and_set_current_added():
 
 
 def test_a_shipment_is_planned_from_a_new_pickup_to_a_new_drop_off():
-    """driving the 800 miles beats flying (795, plus 50 for truck2 to first drive from the San Francisco terminal to SFO):
-    truck from the Seattle terminal to the pickup 50, load 48, drive to the drop-off 640, unload 64"""
+    """driving the 800 miles beats flying, which handles the chairs 2 more times: truck from the Seattle terminal to
+    the pickup 50, load 480, drive to the drop-off 640, unload 640"""
     reasoner = Reasoner()
     pickup, dropoff, chairs = new_delivery(reasoner)
     lp = LogisticsPlanner(reasoner.world)
@@ -519,4 +520,4 @@ def test_a_shipment_is_planned_from_a_new_pickup_to_a_new_drop_off():
     plan, cost = lp.plan()
     lp.clear()
     assert isinstance(plan[-1], UnloadAction) and plan[-1].location.name == "dropoff_san_francisco"
-    assert not any(isinstance(a, FlyAction) for a in plan) and cost == pytest.approx(802.0)
+    assert not any(isinstance(a, FlyAction) for a in plan) and cost == pytest.approx(1810.0)

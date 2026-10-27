@@ -19,6 +19,11 @@ class Location(Entity):
     """base type for any place in a city where shipments and vehicles can be: a terminal or an airport"""
     city: City = Field(description="city the location is in")
 
+    @property
+    def place_name(self) -> str:
+        """what the location is called when telling a human about it: the name of its city"""
+        return self.city.display_name
+
 class Terminal(Location):
     """terminal location in a city, where shipments start and end their journeys
 
@@ -27,6 +32,11 @@ class Terminal(Location):
     """
     display_name: str = Field(description="name of the terminal as customers know it")
 
+    @property
+    def place_name(self) -> str:
+        """the name of the terminal"""
+        return self.display_name
+
 class Airport(Location):
     """airport location in a city, the only place airplanes can be
 
@@ -34,6 +44,11 @@ class Airport(Location):
     airplanes fly between airports connected by an air route
     """
     display_name: str = Field(description="full name of the airport")
+
+    @property
+    def place_name(self) -> str:
+        """the name of the airport"""
+        return self.display_name
 
 class Shipment(Entity):
     """shipment to be moved through the network
@@ -167,36 +182,66 @@ class ShippingRequest(BaseModel):
         return [part for part in ("origin", "destination", "shipment") if getattr(self, part) is None]
 
 
-class Action(BaseModel):
+class ConceptualAction(BaseModel):
     """an action the agent takes to deliver a shipment; cost is the price of carrying it out"""
     cost: float = Field(description="price of carrying out the action, in US dollars")
 
-class DriveLocalAction(Action):
+class DriveLocalAction(ConceptualAction):
     """drive a truck between a terminal and the airport in the same city"""
     truck: Truck
     from_location: Location
     to_location: Location
 
-class DriveLongDistanceAction(Action):
+    def __str__(self) -> str:
+        return (
+            f"{self.truck.display_name} drives from {self.from_location.place_name} to "
+            f"{self.to_location.place_name} (${self.cost:,.2f})"
+        )
+
+class DriveLongDistanceAction(ConceptualAction):
     """drive a truck between locations in different cities, each city with a terminal"""
     truck: Truck
     from_location: Location
     to_location: Location
 
-class FlyAction(Action):
+    def __str__(self) -> str:
+        return (
+            f"{self.truck.display_name} drives long-distance from {self.from_location.place_name} to "
+            f"{self.to_location.place_name} (${self.cost:,.2f})"
+        )
+
+class FlyAction(ConceptualAction):
     """fly an airplane between two airports connected by an air route"""
     airplane: Airplane
     from_location: Airport
     to_location: Airport
 
-class LoadAction(Action):
+    def __str__(self) -> str:
+        return (
+            f"{self.airplane.display_name} flies from {self.from_location.place_name} to "
+            f"{self.to_location.place_name} (${self.cost:,.2f})"
+        )
+
+class LoadAction(ConceptualAction):
     """load a shipment into a vehicle"""
     shipment: Shipment
     vehicle: Truck | Airplane
     location: Location
 
-class UnloadAction(Action):
+    def __str__(self) -> str:
+        return (
+            f"Load the {self.shipment.details} onto {self.vehicle.display_name} at "
+            f"{self.location.place_name} (${self.cost:,.2f})"
+        )
+
+class UnloadAction(ConceptualAction):
     """unload a shipment from a vehicle"""
     shipment: Shipment
     vehicle: Truck | Airplane
     location: Location
+
+    def __str__(self) -> str:
+        return (
+            f"Unload the {self.shipment.details} from {self.vehicle.display_name} at "
+            f"{self.location.place_name} (${self.cost:,.2f})"
+        )
