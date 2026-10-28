@@ -5,62 +5,110 @@
 [![cognition inside](https://img.shields.io/badge/cognition-inside-7b2fbe?labelColor=f3effa&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMCAzNiAzNiIgZmlsbD0ibm9uZSI%2BPHBvbHlnb24gcG9pbnRzPSIyMCw0IDM0LjMsMTQuNCAyOC44LDMxLjYgMTEuMiwzMS42IDUuNywxNC40IiBzdHJva2U9IiM3YjJmYmUiIHN0cm9rZS13aWR0aD0iMi4yIi8%2BPGcgc3Ryb2tlPSIjYzQ3ZDIwIiBzdHJva2Utd2lkdGg9IjIiPjxsaW5lIHgxPSIyMCIgeTE9IjIwIiB4Mj0iMjAiIHkyPSI0Ii8%2BPGxpbmUgeDE9IjIwIiB5MT0iMjAiIHgyPSIzNC4zIiB5Mj0iMTQuNCIvPjxsaW5lIHgxPSIyMCIgeTE9IjIwIiB4Mj0iMjguOCIgeTI9IjMxLjYiLz48bGluZSB4MT0iMjAiIHkxPSIyMCIgeDI9IjExLjIiIHkyPSIzMS42Ii8%2BPGxpbmUgeDE9IjIwIiB5MT0iMjAiIHgyPSI1LjciIHkyPSIxNC40Ii8%2BPC9nPjxnIGZpbGw9IiM3YjJmYmUiPjxjaXJjbGUgY3g9IjIwIiBjeT0iNCIgcj0iMy4yIi8%2BPGNpcmNsZSBjeD0iMzQuMyIgY3k9IjE0LjQiIHI9IjMuMiIvPjxjaXJjbGUgY3g9IjI4LjgiIGN5PSIzMS42IiByPSIzLjIiLz48Y2lyY2xlIGN4PSIxMS4yIiBjeT0iMzEuNiIgcj0iMy4yIi8%2BPGNpcmNsZSBjeD0iNS43IiBjeT0iMTQuNCIgcj0iMy4yIi8%2BPC9nPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjQuNiIgZmlsbD0iI2M0N2QyMCIvPjwvc3ZnPgo%3D)](https://github.com/polycog/cognition)
 [![cognition on PyPI](https://img.shields.io/pypi/v/polycog-cognition?label=cognition%20on%20PyPI&color=c47d20&labelColor=f3effa&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjIgMCAzNiAzNiIgZmlsbD0ibm9uZSI%2BPHBvbHlnb24gcG9pbnRzPSIyMCw0IDM0LjMsMTQuNCAyOC44LDMxLjYgMTEuMiwzMS42IDUuNywxNC40IiBzdHJva2U9IiM3YjJmYmUiIHN0cm9rZS13aWR0aD0iMi4yIi8%2BPGcgc3Ryb2tlPSIjYzQ3ZDIwIiBzdHJva2Utd2lkdGg9IjIiPjxsaW5lIHgxPSIyMCIgeTE9IjIwIiB4Mj0iMjAiIHkyPSI0Ii8%2BPGxpbmUgeDE9IjIwIiB5MT0iMjAiIHgyPSIzNC4zIiB5Mj0iMTQuNCIvPjxsaW5lIHgxPSIyMCIgeTE9IjIwIiB4Mj0iMjguOCIgeTI9IjMxLjYiLz48bGluZSB4MT0iMjAiIHkxPSIyMCIgeDI9IjExLjIiIHkyPSIzMS42Ii8%2BPGxpbmUgeDE9IjIwIiB5MT0iMjAiIHgyPSI1LjciIHkyPSIxNC40Ii8%2BPC9nPjxnIGZpbGw9IiM3YjJmYmUiPjxjaXJjbGUgY3g9IjIwIiBjeT0iNCIgcj0iMy4yIi8%2BPGNpcmNsZSBjeD0iMzQuMyIgY3k9IjE0LjQiIHI9IjMuMiIvPjxjaXJjbGUgY3g9IjI4LjgiIGN5PSIzMS42IiByPSIzLjIiLz48Y2lyY2xlIGN4PSIxMS4yIiBjeT0iMzEuNiIgcj0iMy4yIi8%2BPGNpcmNsZSBjeD0iNS43IiBjeT0iMTQuNCIgcj0iMy4yIi8%2BPC9nPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjQuNiIgZmlsbD0iI2M0N2QyMCIvPjwvc3ZnPgo%3D)](https://pypi.org/project/polycog-cognition/)
 
-This repository is a neurosymbolic agent built with the
-[polycog cognition](https://pypi.org/project/polycog-cognition/) library. It pairs a neural part, a language model,
-with a symbolic part, a world graph reasoner, and a search planner, and gives each the job it does best. The
-language model understands what a human says and generates the agent's replies; the symbolic part reasons with ground truth and makes decisions.
-Every answer the agent gives is reasoned out from what it knows, not guessed by the language
-model.
+## 1. Summary
 
-**[▶ Watch the demo](https://drive.google.com/file/d/1KbiW5nJUbtehfRNWvjA9JTc0np8MuhKm/view?usp=sharing)** to see the agent at work.
+A **neurosymbolic** logistics support agent, built with the [`cognition`](https://github.com/polycog/cognition) library, that helps a small-fleet cargo carrier quote delivery prices. The carrier dispatcher describes a shipment in plain language, and the agent works out the quote given the carrier's fleet, routes, labor rates, and fuel prices, and replies with a step-by-step estimate. The language model never sets a price: a symbolic planner finds the plan and its cost.
 
-## The use case: quoting deliveries
+### Contents
 
-Imagine a small carrier company. It has terminals and airport access in five cities (Seattle, San Francisco, Boston,
-Denver, and Detroit), and it owns only a few vehicles: two box trucks and one cargo airplane. Customers keep asking
-the same question: *how much will it cost to get my shipment there?*
+1. [Summary](#1-summary)
+2. [Problem Statement](#2-problem-statement)
+3. [Technical Approach and Demo](#3-technical-approach-and-demo)
+4. [Install, Run, and Test](#4-install-run-and-test)
+5. [License and Disclaimers](#5-license-and-disclaimers)
 
-Answering takes real work. The cheapest way to deliver depends on where each vehicle is right now, which roads and air
-routes connect the cities, today's gas price, and what crews in each city charge to load and unload. A truck may
-need to drive to the shipment before it can carry it. Sometimes flying beats driving, and sometimes it doesn't. A quote
-that is guessed instead of worked out loses money or loses the customer.
+---
 
-The agent is a logistics support agent for that carrier. You describe your delivery in plain language, and it works
-out the cheapest sequence of drives, flights, loads, and unloads that gets the shipment where you want it, and replies
-with a step-by-step estimate. The language model understands your request, but it never sets a price: the planner
-finds the plan and its cost, and the language model only words the plan, so the description of the steps varies from
-run to run.
+## 2. Problem Statement
 
-You don't have to describe the whole delivery at once. When a part is missing (what is shipped and how much it
-weighs, or a city it goes from or to), the agent asks for it, and keeps asking until it has the whole delivery. If
-you ask for a price first, it asks for the delivery and then answers the price question.
+Small-fleet carriers run on thin margins and field a steady stream of fast-turnaround quote requests, often by email or text. They have no pricing desk, so owner-dispatchers price by hand. The cheapest way to deliver depends on where each vehicle is right now, which roads and air routes connect the cities, today's gas price, and what crews in each city charge to load and unload. A truck may need to drive to the shipment before it can carry it, and sometimes flying beats driving. A quote that is guessed rather than worked out either loses money or loses the job. An agent could let customers simply ask, e.g. *"How much to ship 800 pounds of office chairs from Seattle to San Francisco?"*, but only if its prices come from the carrier's actual fleet and costs, with no hallucinated numbers.
 
-> **Work in progress:** a delivery described while the agent is not asking for one replaces the earlier one, so
-> "make it Boston instead" starts a new delivery rather than changing the destination.
+See [the full problem statement and opportunity](docs/usecase.md).
 
-## Quick start
+---
 
-You need [uv](https://docs.astral.sh/uv/getting-started/installation/) and either an OpenAI API key or a local model
-(see [Choosing a language model](#choosing-a-language-model)).
+## 3. Technical Approach and Demo
+
+The agent prices a delivery the way a careful dispatcher would, while letting the dispatcher speak naturally. An LLM only interprets what the dispatcher types, turning it into structured proposals: their intent, and the shipment, its weight, and the cities it goes from and to. When a part is missing, the agent asks for it, and keeps asking until it has the whole delivery. Symbolic WHEN/THEN operators, written with `cognition`, decide everything else: they manage the conversation through a stack of intents, keep a world graph of the carrier's cities, vehicles, and routes, and hand the delivery to a search planner that finds the cheapest plan and its cost. With no LLM in these decisions, the same request always gets the same price, and every step can be traced. The same approach lets the agent add vehicles to the fleet, close blocked routes, and answer questions about the fleet. See [the technical approach](docs/approach.md) for details.
+
+**Demo:** [watch the agent quote a delivery](https://drive.google.com/file/d/1KbiW5nJUbtehfRNWvjA9JTc0np8MuhKm/view?usp=sharing)
+
+---
+
+## 4. Install, Run, and Test
+
+### 4.1 Clone the repository
 
 ```bash
 git clone https://github.com/polycog/demo-logistics-tech.git
 cd demo-logistics-tech
-uv sync                                  # creates .venv with Python 3.13+ and all dependencies
-export OPENAI_API_KEY=sk-...             # or use a local model, see below
-uv run logistics-agent
 ```
 
-Type your questions at the `you ›` prompt. Type `quit`, `exit`, or `bye` (or press Ctrl+D) to stop.
+### 4.2 Install the dependencies
 
-In a terminal, the console is drawn with [Rich](https://github.com/Textualize/rich): each of the agent's replies
-is rendered as Markdown so a plan shows as a list, with a thin line after it, and a spinner turns while the agent works (set
-`NO_COLOR=1` for plain text). To watch the cognition at work, add `--trace`: it shows, step by step, which operator
-the conductor and its sub-processes apply, when the planner searches (in yellow), and where a language model is used,
-each in its own color (the planner's own search steps are counted beside the spinner rather than listed):
+`cognition` requires **Python 3.13 or later**. The project is managed with [uv](https://docs.astral.sh/uv/), which creates the environment and installs everything in [`pyproject.toml`](pyproject.toml):
+
+```bash
+uv sync
+```
+
+This installs:
+
+- **`polycog-cognition`**, the `cognition` library, published on PyPI under that name;
+- **`pydantic-ai-slim[openai]`**, which `cognition` builds on, with the OpenAI extra for the language model;
+- **`rich`**, for the terminal console.
+
+Without uv, install the project with pip, which also adds the `logistics-agent` command:
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Python 3.13 or newer
+pip install -e .
+```
+
+### 4.3 Choose a language model
+
+[`llm_config.toml`](llm_config.toml) picks the model the agent talks through. Set `provider` to one of:
+
+| Provider | Model | Needs |
+|---|---|---|
+| `openai` (default) | `gpt-4o` | `OPENAI_API_KEY` |
+| `local` | `openai/gpt-oss-20b` | An OpenAI-compatible server at `http://localhost:1234/v1` (such as LM Studio) |
+
+For `openai`, export your key in the shell you run the agent from, and never put it in `llm_config.toml`:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+For `local`, with [LM Studio](https://lmstudio.ai), download `openai/gpt-oss-20b`, load it, and start the local server. To switch for a single run without editing the file, set `LLM_PROVIDER`:
+
+```bash
+LLM_PROVIDER=local uv run logistics-agent
+```
+
+Smaller local models are less reliable at producing structured output than `gpt-4o`, so expect the occasional misunderstanding.
+
+### 4.4 Run the agent
+
+```bash
+uv run logistics-agent            # add --trace to see which operator runs each step
+```
+
+Describe your delivery at the `you ›` prompt, e.g. "I need to ship a pallet of office chairs, 800 pounds, from Seattle to San Francisco", then ask what it costs. You can also:
+
+| Ask | Example |
+| --- | --- |
+| Say hello | "hello there" |
+| What the agent can do | "what can you do?" |
+| Acknowledge the agent | "thanks" (the agent replies and repeats any question it was waiting on); "ok", "got it" (the agent says nothing) |
+| Add a vehicle to the fleet | "add a new truck called Road Runner" (the agent asks for what it still needs, then where the vehicle is, and asks you to confirm before adding it) |
+| Ask about the fleet | "which trucks do you have?", "what is in your fleet?" |
+| Report a blocked route | "the route between Seattle and San Francisco is snowed in" (the agent works out whether it is the road or the flights, and asks you to confirm before closing it; deliveries are then planned around it) |
+| Stop | "quit", "exit", "bye", or Ctrl+D |
+
+With `--trace`, the console shows which operator the conductor and its sub-processes apply, when the planner searches (in yellow), and where a language model is used:
 
 ```
-uv run logistics-agent --trace
 you › I need to ship a pallet of office chairs, 800 pounds, from Seattle to San Francisco
   · conductor: recognize_intent
     · llm: classify HumanIntent
@@ -74,165 +122,22 @@ you › I need to ship a pallet of office chairs, 800 pounds, from Seattle to Sa
 agent › Got it: the pallet of office chairs (800 lb) from Seattle to San Francisco. Ask me what it costs whenever you are ready.
 ```
 
-### Without uv
+Set `NO_COLOR=1` for plain text.
 
-The only dependencies are `polycog-cognition`, pydantic-ai's OpenAI client, and Rich, all on PyPI. Installing the
-project with pip pulls them in and adds the `logistics-agent` command:
+> **Work in progress:** a delivery described while the agent is not asking for one replaces the earlier one, so "make it Boston instead" starts a new delivery rather than changing the destination.
 
-```bash
-python -m venv .venv && source .venv/bin/activate   # Python 3.13 or newer
-pip install -e .
-logistics-agent
-```
+### 4.5 Run the tests
 
-## Choosing a language model
-
-`llm_config.toml` picks the model the agent talks through:
-
-```toml
-provider = "openai"          # "openai" or "local"
-
-[openai]
-model = "gpt-4o"             # the API key is read from OPENAI_API_KEY
-
-[local]
-model = "openai/gpt-oss-20b"
-base_url = "http://localhost:1234/v1"
-api_key = "lm-studio"        # LM Studio accepts any key
-```
-
-- **OpenAI** — set `OPENAI_API_KEY` in your environment. Never put the key in `llm_config.toml`.
-- **Local** — any server with an OpenAI-compatible API works. With [LM Studio](https://lmstudio.ai), download
-  `openai/gpt-oss-20b`, load it, and start the local server (it listens on `http://localhost:1234/v1`).
-
-To switch for a single run without editing the file, set `LLM_PROVIDER`:
-
-```bash
-LLM_PROVIDER=local uv run logistics-agent
-```
-
-Smaller local models are less reliable at producing structured output than `gpt-4o`, so expect the occasional
-misunderstanding.
-
-## What you can ask
-
-| Ask | Example |
-| --- | --- |
-| Say hello | "hello there" |
-| What the agent can do | "what can you do?" |
-| Acknowledge the agent | "thanks" (the agent replies and repeats any question it was waiting on); "ok", "got it" (the agent says nothing) |
-| Add a vehicle to the fleet | "add a new truck called Road Runner" (the agent asks for what it still needs, then where the vehicle is, and asks you to confirm before adding it) |
-| Ask about the fleet | "which trucks do you have?", "what is in your fleet?" (the agent lists the vehicles, each with its make and model, payload, and where it is, from the world graph) |
-| Report a blocked route | "the route between Seattle and San Francisco is snowed in" (the agent works out whether it is the road or the flights, asking if it can't tell, and asks you to confirm before closing it; deliveries are then planned around it) |
-| Stop | "quit", "exit", "bye" |
-
-## The world
-
-Five cities — Seattle, San Francisco, Boston, Denver, and Detroit — each with one terminal and one airport.
-
-- **Trucks** drive between locations in the same city, or between locations in two cities that a truck route
-  connects, as long as both cities have a terminal. Long-distance drives cost the gas price per mile of the route.
-- **Airplanes** fly between airports along air routes, each with its own price.
-- **Shipments** move only by being loaded into a vehicle. Loading and unloading cost the shipment's weight times the
-  labor rate in that city.
-
-At the start, Big Bertha (a truck) is at Seattle Terminal, Little Rocket (a truck) is at San Francisco Terminal, and
-The Pelican (an airplane) is at Seattle-Tacoma airport. There are no shipments at the start, and a shipment is wherever you say it is. The planner searches for the cheapest
-sequence of drives, flights, loads, and unloads that reaches the goal.
-
-## How it works
-
-The agent lives in the `logistics_agent` package, one job per module:
-
-```
-logistics_agent/   the agent
-tests/             offline tests
-design-docs/       detailed designs of parts of the agent
-llm_config.toml    which language model to use
-pyproject.toml     dependencies and the logistics-agent command
-LICENSE, NOTICE    the Apache License 2.0, and the copyright notice
-CITATION.cff       how to cite this repository
-```
-
-| Module | Role |
-| --- | --- |
-| `assistant.py` | Runs the agent: reads lines from the terminal, prints replies, and loops until the human quits. |
-| `conductor.py` | The decision process: the conversation state and one operator per thing the agent can do. |
-| `console.py` | How the conversation looks in the terminal, drawn with Rich: the replies and the thin lines between them, the prompt, the spinner, and the reasoning steps. |
-| `trace.py` | Reports, for `--trace`, which operator each decision process applies, when the planner searches, and where a language model is used. |
-| `fill_shipping_request.py` | The sub-process that fills in a shipping request from what the human says: the cities it goes from and to, which can only be cities the carrier serves, and the shipment. It extracts every missing part in one call to the language model, and returns the request and an ask for each part still missing. |
-| `communicator.py` | Language understanding: the human's intents, the agent's asks, and the LLM configuration. |
-| `reasoner.py` | Builds and maintains the world graph, and answers queries and updates against it. |
-| `planner.py` | The search planner: what each action does to the world, and the search for the cheapest plan. |
-| `fill_vehicle.py` | The sub-process that fills in a vehicle to add to the fleet: its kind, classified among the `VehicleType`s, then its fields, all at once. |
-| `fill_placement.py` | The sub-process that fills in where a vehicle being added is: an `At` relation to an existing terminal or airport (only airports for an airplane). |
-| `fill_route.py` | The sub-process that fills in which route the human reports blocked: the cities at its ends, and whether it is the road or the flights, classified from what blocks it. |
-| `inspect_state.py` | The sub-process that answers questions about the state of the world, such as which vehicles the fleet has: the language model classifies the question and fills in what it is about, and the reasoner looks the facts up. |
-| `drafts.py` | Drafts of models whose fields are all required, such as a truck, filled in over several turns and built once nothing is missing. |
-| `domain.py` | The domain model: cities, locations (terminals and airports, each in a city), vehicles (all tagged `FLEET`, and the `VehicleType`s the human can add), shipments, routes, costs, actions, and the shipping request (a shipment, the location it is sent from, and the location it goes to). The docstrings and field descriptions of what the agent fills in are the questions it asks for them. |
-
-The conductor manages the conversation with a **stack of intents**. Every turn, it recognizes the human's intent
-with an `EnumClassifier` and pushes it onto the stack. Recognizing only pushes: every other operator applies to what
-is on top of the stack, so the top alone decides what happens next.
-The stack holds two kinds of intents, both in `communicator.py`:
-
-- `HumanIntent`, what the human wants, such as a price estimate. It is popped once it is done.
-- `AgentIntent`, what the agent wants. `NotUnderstood` is pushed when the utterance matches no known intent, so the
-  agent says it cannot respond to that. `AskFor` is another: an ask for a model being filled in, or for one attribute of
-  it. Its question comes from the model itself: the docstring for the whole model, or the attribute's `Field`
-  description. An ask is popped once the model has what it asks for, not when the human answers. So answering the
-  last missing attribute pops that attribute's ask, and then the ask for the whole model under it.
-
-For example, asking for a price before describing the delivery, then leaving out the destination:
-
-| The human says | Stack afterwards (top on the right) |
-| --- | --- |
-| "how much will it cost?" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)` |
-| "200 pounds of books from Seattle" | `ESTIMATE_PRICE`, `AskFor(ShippingRequest)`, `AskFor(ShippingRequest, "destination")` |
-| "Denver" | both asks pop, the delivery is planned and priced, and `ESTIMATE_PRICE` pops: empty |
-
-Every operator of the conductor, and what is on top of the stack when it applies:
-
-![The conductor's operators](design-docs/figures/conductor.svg)
-
-`ShippingRequestFiller` fills in the parts missing from the shipping request together, in one call to the language
-model, so each thing the human mentions fills in one part only. The detailed design is in
-[`design-docs/model-filler.md`](design-docs/model-filler.md): the sub-process, how the conductor asks for missing
-parts and pops the asks, why the parts are extracted together, the known limitations, and a proposal for making the
-filler generic in `cognition`.
-
-Adding a vehicle to the fleet uses the same stack: the agent fills in the vehicle, then where it is, then asks the
-human to confirm before it changes the world graph. Its design is in
-[`design-docs/fleet-updates.md`](design-docs/fleet-updates.md). Reporting a blocked route works the same way, and closes
-the route once the human confirms: [`design-docs/route-closures.md`](design-docs/route-closures.md). Questions about
-the state of the world are answered from the world graph: [`design-docs/state-inspection.md`](design-docs/state-inspection.md).
-
-The language model never decides facts or prices — it only translates between the human and the graph.
-
-## Running the tests
-
-The tests run offline: fakes stand in for the language model, so no API key or local server is needed.
+The test suite uses [pytest](https://docs.pytest.org/) and runs fully offline: fakes stand in for the language model, so it needs no API key or local server and makes no paid calls.
 
 ```bash
 uv run pytest
 ```
 
-## Citation
+---
 
-If you use this agent in your work, please cite it. The citation metadata is in [`CITATION.cff`](CITATION.cff), which
-GitHub also offers through the "Cite this repository" button:
+## 5. License and Disclaimers
 
-```bibtex
-@software{polycog_logistics_support_agent,
-  author  = {{Polycog}},
-  title   = {Logistics support agent: a demo of polycog cognition},
-  url     = {https://github.com/polycog/demo-logistics-tech},
-  version = {0.1.0},
-  license = {Apache-2.0},
-  year    = {2026}
-}
-```
+This project is released under the [Apache License 2.0](LICENSE); see also [`NOTICE`](NOTICE). Copyright © 2026 Polycog, Inc. If you use it, please cite it using the metadata in [`CITATION.cff`](CITATION.cff).
 
-## License
-
-Copyright 2026 Polycog. Licensed under the [Apache License 2.0](LICENSE); see also [`NOTICE`](NOTICE).
+> **Disclaimer:** this project is a technical demonstration of neurosymbolic reasoning. It is not a production pricing or dispatch system, and its quotes are not binding offers. The carrier, its fleet, routes, and costs are fictional.
