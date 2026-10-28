@@ -108,6 +108,6 @@ uv run pytest
 
 ## 5. License and Disclaimers
 
-This project is released under the [Apache License 2.0](LICENSE); see also [`NOTICE`](NOTICE). Copyright © 2026 Polycog, Inc. If you use it, please cite it using the metadata in [`CITATION.cff`](CITATION.cff).
+This project is released under the [Apache License 2.0](LICENSE). Copyright © 2026 Polycog, Inc. If you use it, please cite it using the metadata in [`CITATION.cff`](CITATION.cff).
 
 > **Disclaimer:** this project is a technical demonstration of neurosymbolic reasoning. It is not a production pricing or dispatch system, and its quotes are not binding offers. The carrier, its fleet, routes, and costs are fictional.

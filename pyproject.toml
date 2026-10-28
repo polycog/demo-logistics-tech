@@ -5,7 +5,11 @@ description = "A logistics support agent for a small logistics network, built wi
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "Polycog" }]
+authors = [
+    { name = "Shiwali Mohan" },
+    { name = "Nate Derbinsky" },
+    { name = "Polycog, Inc." },
+]
 requires-python = ">=3.13"
 keywords = ["cognitive agents", "conversational agents", "planning", "logistics", "llm", "polycog-cognition"]
 classifiers = [
