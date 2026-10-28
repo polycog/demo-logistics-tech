@@ -94,37 +94,7 @@ Smaller local models are less reliable at producing structured output than `gpt-
 uv run logistics-agent            # add --trace to see which operator runs each step
 ```
 
-Describe your delivery at the `you ›` prompt, e.g. "I need to ship a pallet of office chairs, 800 pounds, from Seattle to San Francisco", then ask what it costs. You can also:
-
-| Ask | Example |
-| --- | --- |
-| Say hello | "hello there" |
-| What the agent can do | "what can you do?" |
-| Acknowledge the agent | "thanks" (the agent replies and repeats any question it was waiting on); "ok", "got it" (the agent says nothing) |
-| Add a vehicle to the fleet | "add a new truck called Road Runner" (the agent asks for what it still needs, then where the vehicle is, and asks you to confirm before adding it) |
-| Ask about the fleet | "which trucks do you have?", "what is in your fleet?" |
-| Report a blocked route | "the route between Seattle and San Francisco is snowed in" (the agent works out whether it is the road or the flights, and asks you to confirm before closing it; deliveries are then planned around it) |
-| Stop | "quit", "exit", "bye", or Ctrl+D |
-
-With `--trace`, the console shows which operator the conductor and its sub-processes apply, when the planner searches (in yellow), and where a language model is used:
-
-```
-you › I need to ship a pallet of office chairs, 800 pounds, from Seattle to San Francisco
-  · conductor: recognize_intent
-    · llm: classify HumanIntent
-  · conductor: react_to_shipping_request_intent
-    · fill_shipping_request: take_request
-    · fill_shipping_request: extract_parts
-      · llm: populate ShippingRequestParts
-    · fill_shipping_request: compose_asks
-  · conductor: confirm_shipping_request
-  · conductor: reply
-agent › Got it: the pallet of office chairs (800 lb) from Seattle to San Francisco. Ask me what it costs whenever you are ready.
-```
-
-Set `NO_COLOR=1` for plain text.
-
-> **Work in progress:** a delivery described while the agent is not asking for one replaces the earlier one, so "make it Boston instead" starts a new delivery rather than changing the destination.
+Describe your delivery at the `you ›` prompt, e.g. "I need to ship a pallet of office chairs, 800 pounds, from Seattle to San Francisco", then ask what it costs. Type `quit` or press Ctrl+D to stop. See [the technical approach](docs/approach.md#what-you-can-ask) for everything else you can ask, and what `--trace` shows.
 
 ### 4.5 Run the tests
 
