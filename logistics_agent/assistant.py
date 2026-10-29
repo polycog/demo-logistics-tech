@@ -5,7 +5,7 @@ import argparse
 
 from cognition import Actuator, Cogent, DecisionProcess, DecisionProcessErrorMessage, Sensor
 
-from logistics_agent.communicator import Utterance
+from logistics_agent.communicator import DEFAULT_LLM, Utterance
 from logistics_agent.console import Console
 from logistics_agent.conductor import (
     Acknowledge,
@@ -191,7 +191,10 @@ def main(argv: list[str] | None = None) -> None:
             return True
         raise RuntimeError(err)
 
+    console.show_note(f"Model: { DEFAULT_LLM.model_name }")
+    console.show_note("")
     console.show_note("(type 'quit' to stop)")
+
     try:
         assistant(keep_going, dp_err_p=ignore_empty_input)
     except KeyboardInterrupt:
