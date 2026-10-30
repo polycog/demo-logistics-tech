@@ -23,13 +23,9 @@ According to [Foundation Capital](https://foundationcapital.com/ideas/overhaulin
 
 ## Why this needs neurosymbolic AI
 
-### What rules alone can't do
+### Why LLMs can't do this alone
 
-Routing and cost optimization are well-studied symbolic problems, but a solver needs a fully specified request. Quote requests arrive as emails and texts, often incomplete ("800 lb of chairs, Seattle to SF, how much?" with no pickup time, or "a couple of pallets"), and a web form that demands every field up front is exactly what a busy customer won't fill in. Someone still has to turn the message into a problem the solver can take, and ask for what's missing.
-
-### What an LLM alone can't do
-
-Ask an LLM for a quote and it returns a confident, plausible number. But:
+LLMs are the current state of the art for taking requests the way customers actually send them: short emails and texts, often incomplete ("800 lb of chairs, Seattle to SF, how much?" with no pickup time, or "a couple of pallets"). But ask an LLM for a quote and it returns a confident, plausible number:
 
 - **it doesn't search,** so it misses that sending a truck from a nearby city is cheaper than using the one at the origin, or that flying one leg beats driving;
 - **it does arithmetic unreliably** across fuel, mileage, and per-city labor rates;
@@ -38,7 +34,15 @@ Ask an LLM for a quote and it returns a confident, plausible number. But:
 
 For a carrier on thin margins, an unexplainable quote that's too low is worse than no quote.
 
-### Splitting the work
+### What symbolic reasoning adds
+
+Adding symbolic reasoning keeps the LLM understanding the request, and hands the pricing to a planner working from the carrier's own data:
+
+- **Missing details are asked for, not assumed.** The agent tracks what the request still needs and asks until it has the whole delivery.
+- **The cheapest plan is searched for, not guessed,** including driving a truck to the pickup first or flying one leg.
+- **Costs are calculated exactly** from fuel prices, mileage, and labor rates.
+- **Only real vehicles and open routes are used,** because every plan is built on a world model of the fleet and network.
+- **The same request gets the same price,** with a step-by-step plan that explains it.
 
 | Neural: understanding the request | Symbolic: pricing the delivery |
 |---|---|
