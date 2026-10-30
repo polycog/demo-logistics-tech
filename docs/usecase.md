@@ -19,11 +19,37 @@ A quote that is guessed rather than worked out hurts either way: pricing too low
 
 ## Opportunity and challenge
 
-According to [Foundation Capital](https://foundationcapital.com/ideas/overhauling-logistics-with-ai-a-79-billion-opportunity), solving these operational bottlenecks anchors a $30 billion AI market opportunity in route optimization and planning, where agents can eliminate deadhead waste, protect driver labor, and capture large back-office productivity savings by turning unstructured demand into dynamically priced, profitable routes in real time. However, capturing this value requires guaranteed accuracy in price estimation. A language model that guesses at a plan or a price, or hallucinates a vehicle or a route, produces exactly the kind of wrong quote the carrier cannot afford.
+According to [Foundation Capital](https://foundationcapital.com/ideas/overhauling-logistics-with-ai-a-79-billion-opportunity), solving these operational bottlenecks anchors a $30 billion AI market opportunity in route optimization and planning, where autonomous agents can eliminate deadhead waste, protect driver labor, and capture large back-office productivity savings by turning unstructured demand into dynamically priced, profitable routes in real time. However, capturing this value requires prices that are worked out from the carrier's actual fleet, routes, and costs, not estimated. A language model that guesses at a plan or a price, or hallucinates a vehicle or a route, produces exactly the kind of wrong quote the carrier cannot afford.
+
+## Why this needs neurosymbolic AI
+
+### What rules alone can't do
+
+Routing and cost optimization are well-studied symbolic problems, but a solver needs a fully specified request. Quote requests arrive as emails and texts, often incomplete ("800 lb of chairs, Seattle to SF, how much?" with no pickup time, or "a couple of pallets"), and a web form that demands every field up front is exactly what a busy customer won't fill in. Someone still has to turn the message into a problem the solver can take, and ask for what's missing.
+
+### What an LLM alone can't do
+
+Ask an LLM for a quote and it returns a confident, plausible number. But:
+
+- **it doesn't search,** so it misses that sending a truck from a nearby city is cheaper than using the one at the origin, or that flying one leg beats driving;
+- **it does arithmetic unreliably** across fuel, mileage, and per-city labor rates;
+- **it can invent fleet and network facts,** quoting a truck that is busy elsewhere, or a road that is closed;
+- **it isn't consistent,** so two customers asking the same question can get different prices.
+
+For a carrier on thin margins, an unexplainable quote that's too low is worse than no quote.
+
+### Splitting the work
+
+| Neural: understanding the request | Symbolic: pricing the delivery |
+|---|---|
+| Extract the shipment, weight, origin, and destination | Track the conversation and ask for missing parts |
+| Recognize what the dispatcher wants to do | Keep the world model of cities, vehicles, and routes |
+| | Search for the cheapest plan and compute its cost |
+| | Explain the quote step by step |
 
 ## Impact
 
-With agents, small-fleet carriers can automate shipping price quotes with guaranteed accuracy and explainable, step-by-step plans. This replaces manual spreadsheet work, prevents margin loss, and keeps the carrier competitive and profitable in real time.
+With agents, small-fleet carriers can automate shipping price quotes that are computed exactly from their own fleet and costs, with explainable, step-by-step plans. This replaces manual spreadsheet work, prevents margin loss, and keeps the carrier competitive and profitable in real time.
 
 ## Technical approach
 
